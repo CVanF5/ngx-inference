@@ -630,10 +630,28 @@ pub static mut ngx_http_inference_module: ngx_module_t = ngx_module_t {
 http_variable_get!(inference_upstream_var_get, |request: &mut http::Request, v: *mut ngx::ffi::ngx_variable_value_t, _data: usize| {
     // Evaluate $inference_upstream from "X-Inference-Upstream" header
     unsafe {
-        let conf = Module::location_conf(request).expect("module config missing");
+        if v.is_null() {
+            return core::Status::NGX_ERROR;
+        }
+        let conf = match Module::location_conf(request) {
+            Some(c) => c,
+            None => {
+                // mark not found on missing config
+                (*v).set_not_found(1);
+                (*v).set_len(0);
+                (*v).data = ::core::ptr::null_mut();
+                return core::Status::NGX_OK;
+            }
+        };
         let upstream_header = if conf.epp_header_name.is_empty() { "X-Inference-Upstream".to_string() } else { conf.epp_header_name.clone() };
         if let Some(val) = get_header_in(request, &upstream_header) {
             let bytes = val.as_bytes();
+            if bytes.is_empty() {
+                (*v).set_not_found(1);
+                (*v).set_len(0);
+                (*v).data = ::core::ptr::null_mut();
+                return core::Status::NGX_OK;
+            }
             // allocate buffer from request pool
             let pool = request.pool();
             let data_ptr = pool.alloc(bytes.len());
@@ -665,7 +683,13 @@ http_variable_get!(inference_upstream_var_get, |request: &mut http::Request, v: 
  // -------------------- Access Phase Handler --------------------
 
 http_request_handler!(inference_access_handler, |request: &mut http::Request| {
-    let conf = Module::location_conf(request).expect("module config missing");
+    let conf = match Module::location_conf(request) {
+        Some(c) => c,
+        None => {
+            ngx_log_debug_http!(request, "ngx-inference: module config missing");
+            return core::Status::NGX_DECLINED;
+        }
+    };
 
     ngx_log_debug_http!(
         request,
@@ -676,29 +700,48 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
 
     // Stage 1: BBR (Body-Based Routing) - stream request body to ext-proc for JSON model detection
     if conf.bbr_enable {
-        // Initiate asynchronous reading of the client request body.
-        unsafe {
-            // If header already present, skip BBR.
-            let header_name = if conf.bbr_header_name.is_empty() { "X-Gateway-Model-Name".to_string() } else { conf.bbr_header_name.clone() };
-            if let Some(_existing) = get_header_in(request, &header_name) {
-                // Already set, skip BBR stage.
-            } else {
-                let r_ptr: *mut ngx::ffi::ngx_http_request_t = request.as_mut();
-                let rc = ngx::ffi::ngx_http_read_client_request_body(r_ptr, Some(bbr_body_read_handler));
-                if rc == core::Status::NGX_AGAIN.into() {
-                    // Body will be read asynchronously; resume processing in the handler.
-                    return core::Status::NGX_DONE;
-                } else if rc == core::Status::NGX_OK.into() {
-                    // Body has been read synchronously; run handler immediately.
-                    bbr_body_read_handler(r_ptr);
+        // Check if request method and headers suggest a body might be present
+        let method_str = request.method().to_string();
+        let has_body = method_str == "POST"
+            || method_str == "PUT"
+            || method_str == "PATCH"
+            || get_header_in(request, "Content-Length").map_or(false, |cl| cl != "0")
+            || get_header_in(request, "Transfer-Encoding").map_or(false, |te| te.contains("chunked"));
+        if has_body {
+            ngx_log_debug_http!(request, "ngx-inference: BBR processing for method {} with body", method_str);
+            // Initiate asynchronous reading of the client request body.
+            unsafe {
+                // If header already present, skip BBR.
+                let header_name = if conf.bbr_header_name.is_empty() { "X-Gateway-Model-Name".to_string() } else { conf.bbr_header_name.clone() };
+                if let Some(_existing) = get_header_in(request, &header_name) {
+                    // Already set, skip BBR stage.
                 } else {
-                    ngx_log_debug_http!(request, "ngx-inference: BBR read_body rc={}", rc);
-                    if !conf.bbr_failure_mode_allow {
-                        // Fail closed: reject request
-                        return http::HTTPStatus::BAD_GATEWAY.into();
+                    let r_ptr: *mut ngx::ffi::ngx_http_request_t = request.as_mut();
+                    if r_ptr.is_null() {
+                        ngx_log_debug_http!(request, "ngx-inference: null request pointer in BBR");
+                        if !conf.bbr_failure_mode_allow {
+                            return http::HTTPStatus::BAD_GATEWAY.into();
+                        }
+                    } else {
+                        let rc = ngx::ffi::ngx_http_read_client_request_body(r_ptr, Some(bbr_body_read_handler));
+                        if rc == core::Status::NGX_AGAIN.into() {
+                            // Body will be read asynchronously; resume processing in the handler.
+                            return core::Status::NGX_DONE;
+                        } else if rc == core::Status::NGX_OK.into() {
+                            // Body has been read synchronously; run handler immediately.
+                            bbr_body_read_handler(r_ptr);
+                        } else {
+                            ngx_log_debug_http!(request, "ngx-inference: BBR read_body rc={}", rc);
+                            if !conf.bbr_failure_mode_allow {
+                                // Fail closed: reject request
+                                return http::HTTPStatus::BAD_GATEWAY.into();
+                            }
+                        }
                     }
                 }
             }
+        } else {
+            ngx_log_debug_http!(request, "ngx-inference: BBR enabled but no body detected for method {}, skipping", method_str);
         }
     }
 
@@ -727,9 +770,20 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
 // Body read handler: called after ngx_http_read_client_request_body finishes reading.
 extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_request_t) {
     unsafe {
+        // Validate input pointer
+        if r.is_null() {
+            return;
+        }
         // Reconstruct Rust wrapper and config
         let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
-        let conf = Module::location_conf(request).expect("module config missing");
+        let conf = match Module::location_conf(request) {
+            Some(c) => c,
+            None => {
+                // No config found, resume processing
+                ngx::ffi::ngx_http_core_run_phases(r);
+                return;
+            }
+        };
 
         // Validate endpoint
         let endpoint = match &conf.bbr_endpoint {
@@ -769,13 +823,15 @@ extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_request_t) {
             while !cl.is_null() {
                 let buf = (*cl).buf;
                 if buf.is_null() {
-                    break;
+                    cl = (*cl).next;
+                    continue;
                 }
                 let pos = (*buf).pos;
                 let last = (*buf).last;
-                if !pos.is_null() && !last.is_null() {
-                    let len = last.offset_from(pos) as usize;
-                    if len > 0 {
+                if !pos.is_null() && !last.is_null() && last >= pos {
+                    let len = last.offset_from(pos);
+                    if len > 0 && len < (1024 * 1024) { // Sanity check: max 1MB per buffer
+                        let len = len as usize;
                         let slice = std::slice::from_raw_parts(pos as *const u8, len);
                         body.extend_from_slice(slice);
                     }
