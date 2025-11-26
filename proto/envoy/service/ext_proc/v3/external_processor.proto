@@ -1,0 +1,225 @@
+syntax = "proto3";
+
+package envoy.service.ext_proc.v3;
+
+import "envoy/config/core/v3/base.proto";
+import "envoy/extensions/filters/http/ext_proc/v3/processing_mode.proto";
+import "envoy/type/v3/http_status.proto";
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+
+// External processing service definition.
+// Bidirectional stream of ProcessingRequest/ProcessingResponse messages.
+service ExternalProcessor {
+  rpc Process(stream ProcessingRequest) returns (stream ProcessingResponse) {}
+}
+
+// Protocol configuration sent by the client as part of the first ProcessingRequest.
+message ProtocolConfiguration {
+  // Configure how request body is sent.
+  envoy.extensions.filters.http.ext_proc.v3.ProcessingMode.BodySendMode request_body_mode = 1;
+
+  // Configure how response body is sent.
+  envoy.extensions.filters.http.ext_proc.v3.ProcessingMode.BodySendMode response_body_mode = 2;
+
+  // If true, client may send body without waiting for header response.
+  bool send_body_without_waiting_for_header_response = 3;
+}
+
+// A message sent from client (data plane) to server (ext-proc).
+message ProcessingRequest {
+  // Oneof identifying the type of request.
+  oneof request {
+    // Request headers info.
+    HttpHeaders request_headers = 2;
+
+    // Response headers info.
+    HttpHeaders response_headers = 3;
+
+    // Request body chunk.
+    HttpBody request_body = 4;
+
+    // Response body chunk.
+    HttpBody response_body = 5;
+
+    // Request trailers.
+    HttpTrailers request_trailers = 6;
+
+    // Response trailers.
+    HttpTrailers response_trailers = 7;
+  }
+
+  // Dynamic metadata associated with the request.
+  envoy.config.core.v3.Metadata metadata_context = 8;
+
+  // Selected attributes for observability/logic.
+  map<string, google.protobuf.Struct> attributes = 9;
+
+  // If true, server responses will be ignored (observability mode).
+  bool observability_mode = 10;
+
+  // Filter protocol configuration (encoded only on first ProcessingRequest).
+  ProtocolConfiguration protocol_config = 11;
+}
+
+// A message sent by server (ext-proc) to client (data plane).
+message ProcessingResponse {
+  // Oneof identifying the type of response.
+  oneof response {
+    // Response to request_headers.
+    HeadersResponse request_headers = 1;
+
+    // Response to response_headers.
+    HeadersResponse response_headers = 2;
+
+    // Response to request_body.
+    BodyResponse request_body = 3;
+
+    // Response to response_body.
+    BodyResponse response_body = 4;
+
+    // Response to request_trailers.
+    TrailersResponse request_trailers = 5;
+
+    // Response to response_trailers.
+    TrailersResponse response_trailers = 6;
+
+    // Locally generated immediate response.
+    ImmediateResponse immediate_response = 7;
+  }
+
+  // Optional dynamic metadata emitted to following filters.
+  google.protobuf.Struct dynamic_metadata = 8;
+
+  // Optional per-request mode override (applies to messages exchanged after headers).
+  envoy.extensions.filters.http.ext_proc.v3.ProcessingMode mode_override = 9;
+
+  // Optional timeout override.
+  google.protobuf.Duration override_message_timeout = 10;
+}
+
+// Headers message sent on request/response path.
+message HttpHeaders {
+  // HTTP headers (lower-cased keys).
+  envoy.config.core.v3.HeaderMap headers = 1;
+
+  // Deprecated upstream field retained for compatibility.
+  map<string, google.protobuf.Struct> attributes = 2;
+
+  // True if there is no message body following.
+  bool end_of_stream = 3;
+}
+
+// Body message sent on request/response path.
+message HttpBody {
+  // Body chunk bytes; multiple HttpBody messages may be sent depending on mode.
+  bytes body = 1;
+
+  // True if this is the last body chunk and no trailers will be sent.
+  bool end_of_stream = 2;
+}
+
+// Trailers message sent on request/response path.
+message HttpTrailers {
+  // HTTP trailers.
+  envoy.config.core.v3.HeaderMap trailers = 1;
+}
+
+// Response to HttpHeaders.
+message HeadersResponse {
+  CommonResponse response = 1;
+}
+
+// Response to HttpBody.
+message BodyResponse {
+  CommonResponse response = 1;
+}
+
+// Response to HttpTrailers.
+message TrailersResponse {
+  // Trailers-only mutation.
+  HeaderMutation header_mutation = 1;
+}
+
+// Common fields between header and body responses.
+message CommonResponse {
+  // Status describing how to continue processing.
+  enum ResponseStatus {
+    // Apply mutation and continue.
+    CONTINUE = 0;
+
+    // Apply mutation, potentially replace body, and then stop streaming further messages.
+    CONTINUE_AND_REPLACE = 1;
+  }
+
+  // Additional direction on how to handle filter chain for this request.
+  ResponseStatus status = 1;
+
+  // Header mutations to apply.
+  HeaderMutation header_mutation = 2;
+
+  // Body mutation to apply.
+  BodyMutation body_mutation = 3;
+
+  // Add new trailers (used with CONTINUE_AND_REPLACE).
+  envoy.config.core.v3.HeaderMap trailers = 4;
+
+  // Clear route cache for current client request (request direction only).
+  bool clear_route_cache = 5;
+}
+
+// Immediate local reply response sent by server.
+message ImmediateResponse {
+  // HTTP status to return.
+  envoy.type.v3.HttpStatus status = 1;
+
+  // Header mutations to apply to local reply.
+  HeaderMutation headers = 2;
+
+  // Message body to return.
+  bytes body = 3;
+
+  // Optional gRPC status trailer.
+  GrpcStatus grpc_status = 4;
+
+  // Details string for logging/debug.
+  string details = 5;
+}
+
+// gRPC status container.
+message GrpcStatus {
+  uint32 status = 1;
+}
+
+// Header/trailer mutation instructions.
+message HeaderMutation {
+  // Add or replace HTTP headers.
+  repeated envoy.config.core.v3.HeaderValueOption set_headers = 1;
+
+  // Remove these HTTP headers.
+  repeated string remove_headers = 2;
+}
+
+// Body response for FULL_DUPLEX_STREAMED mode.
+message StreamedBodyResponse {
+  // Response body chunk to pass upstream/downstream.
+  bytes body = 1;
+
+  // True if this is the last chunk.
+  bool end_of_stream = 2;
+}
+
+// Body mutation instructions.
+message BodyMutation {
+  oneof mutation {
+    // Replace entire body (non streaming modes).
+    bytes body = 1;
+
+    // Clear corresponding body chunk (non streaming modes).
+    bool clear_body = 2;
+
+    // Streamed response body (streaming mode).
+    StreamedBodyResponse streamed_response = 3;
+  }
+}

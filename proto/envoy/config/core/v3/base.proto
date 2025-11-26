@@ -1,0 +1,75 @@
+syntax = "proto3";
+
+package envoy.config.core.v3;
+
+import "google/protobuf/any.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/wrappers.proto";
+
+// Minimal subset of Envoy core types needed by ExternalProcessor:
+// - HeaderValue
+// - HeaderValueOption (with HeaderAppendAction enum)
+// - HeaderMap
+// - Metadata
+
+// Header name/value pair.
+message HeaderValue {
+  // Header name.
+  string key = 1;
+
+  // Header value encoded as string.
+  // Only one of 'value' or 'raw_value' should be set.
+  string value = 2;
+
+  // Header value encoded as bytes (supports non-UTF8).
+  // Only one of 'value' or 'raw_value' should be set.
+  bytes raw_value = 3;
+}
+
+// Header name/value pair plus options to control append behavior.
+message HeaderValueOption {
+  // Action types for header append action.
+  enum HeaderAppendAction {
+    // If the header exists:
+    // - Comma-concatenated for predefined inline headers.
+    // - Duplicate header added in the HeaderMap for other headers.
+    // If the header doesn't exist, add new header.
+    APPEND_IF_EXISTS_OR_ADD = 0;
+
+    // Add the header if absent. No-op if present.
+    ADD_IF_ABSENT = 1;
+
+    // Overwrite existing header values or add if absent.
+    OVERWRITE_IF_EXISTS_OR_ADD = 2;
+
+    // Overwrite existing header values. No-op if absent.
+    OVERWRITE_IF_EXISTS = 3;
+  }
+
+  // Header name/value pair that this option applies to.
+  HeaderValue header = 1;
+
+  // Deprecated legacy 'append' flag preserved for wire compatibility.
+  bool append = 2;
+
+  // Action taken to append/overwrite or only add if absent.
+  HeaderAppendAction append_action = 3;
+
+  // Allow empty header values when true; custom headers with empty values are dropped otherwise.
+  bool keep_empty_value = 4;
+}
+
+// Wrapper for a set of headers.
+message HeaderMap {
+  // A list of header names and their values.
+  repeated HeaderValue headers = 1;
+}
+
+// Dynamic metadata map keyed by reverse DNS filter name.
+message Metadata {
+  // Values encoded as google.protobuf.Struct.
+  map<string, google.protobuf.Struct> filter_metadata = 1;
+
+  // Values encoded as google.protobuf.Any.
+  map<string, google.protobuf.Any> typed_filter_metadata = 2;
+}

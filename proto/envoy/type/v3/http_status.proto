@@ -1,0 +1,23 @@
+syntax = "proto3";
+
+package envoy.type.v3;
+
+// Minimal subset of Envoy HTTP status types needed by ExternalProcessor
+
+// HTTP response codes supported (trimmed).
+enum StatusCode {
+  // Empty - not part of HTTP spec, needed for proto enum type.
+  Empty = 0;
+
+  // OK - 200 status code.
+  OK = 200;
+
+  // InternalServerError - 500 status code.
+  InternalServerError = 500;
+}
+
+// HTTP status.
+message HttpStatus {
+  // Supplies HTTP response code.
+  StatusCode code = 1;
+}

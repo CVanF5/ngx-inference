@@ -1,0 +1,40 @@
+[package]
+name = "ngx-inference"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+authors = ["NGX Inference Module"]
+
+[lib]
+name = "ngx_inference"
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# When building as a standalone dynamic module outside the nginx build system
+# this feature exports the ngx_modules table.
+export-modules = []
+# Enable vendored nginx sources via ngx crate's feature. Build with:
+#   cargo build --features vendored
+vendored = ["ngx/vendored"]
+extproc-mock = ["serde", "serde_json"]
+
+[dependencies]
+ngx = "0.5"
+bytes = "1"
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "time"] }
+tokio-stream = "0.1"
+tonic = { version = "0.11", features = ["tls", "tls-roots"] }
+prost = "0.12"
+prost-types = "0.12"
+serde = { version = "1.0", features = ["derive"], optional = true }
+serde_json = { version = "1.0", optional = true }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+
+[build-dependencies]
+tonic-build = "0.11"
+prost-build = "0.12"
+protoc-bin-vendored = "3"
+
+[package.metadata.docs.rs]
+features = ["export-modules"]
