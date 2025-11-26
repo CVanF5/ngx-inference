@@ -4,15 +4,14 @@
 # used by the ngx-inference module tests. This compiles the `extproc_mock` binary
 # from this repository and packages it into a minimal Debian runtime image.
 
-FROM rust:1.82-slim-bookworm AS builder
+FROM rust:1.91-trixie AS builder
 WORKDIR /work
 
-# Dependencies required when building the crate with the `vendored` feature,
-# which triggers nginx-sys to compile vendored NGINX sources.
+# Dependencies required when building the crate with the `vendored` feature.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential clang libclang-dev pkg-config ca-certificates \
-    libpcre2-dev zlib1g-dev libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+    clang \
+    && apt-get dist-clean
+
 
 # Copy source
 COPY . .
@@ -24,8 +23,11 @@ RUN cargo build --release --features "vendored,extproc-mock" --bin extproc_mock
 
 # ------------------------------------------------------------------------------------------------
 
-FROM debian:bookworm-slim
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+FROM debian:trixie-slim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    && apt-get dist-clean
+
 COPY --from=builder /work/target/release/extproc_mock /usr/local/bin/extproc_mock
 
 # Default environment values; can be overridden via docker-compose

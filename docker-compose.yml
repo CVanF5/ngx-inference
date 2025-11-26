@@ -4,7 +4,7 @@ services:
   nginx:
     build:
       context: .
-      dockerfile: Dockerfile
+      dockerfile: docker/ngx-inference.Dockerfile
     container_name: ngx-inference-nginx
     ports:
       - "8081:80"
@@ -26,6 +26,7 @@ services:
       # The mock will emit this upstream in headers so the module can route requests there.
       - EPP_UPSTREAM=echo-server:80
       - BBR_MODEL=bbr-chosen-model
+      - MOCK_ROLE=BBR
 
   # Mock External Processor for EPP (Endpoint Picker Processor) listening on :9001
   extproc-epp:
@@ -38,6 +39,7 @@ services:
       # Same upstream for both mocks: the nginx module will pick what it needs (EPP/BBR).
       - EPP_UPSTREAM=echo-server:80
       - BBR_MODEL=bbr-chosen-model
+      - MOCK_ROLE=EPP
 
   # Simple upstream service the module should route to based on ext-proc header
   # Using a lightweight echo server so you can see headers/body in the response.

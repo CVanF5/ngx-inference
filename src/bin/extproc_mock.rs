@@ -89,7 +89,7 @@ fn build_header_mutation_body(epp_upstream: &str, bbr_model: &str) -> HeaderMuta
     }
 }
 
-fn build_headers_response(epp_upstream: &str, bbr_model: &str) -> HeadersResponse {
+fn build_headers_response(epp_upstream: &str, _bbr_model: &str) -> HeadersResponse {
     let mutation = build_header_mutation_headers(epp_upstream);
     envoy::service::ext_proc::v3::HeadersResponse {
         response: Some(envoy::service::ext_proc::v3::CommonResponse {
@@ -119,6 +119,7 @@ fn build_body_response(epp_upstream: &str, bbr_model: &str) -> BodyResponse {
 struct ExtProcMock {
     epp_upstream: String,
     bbr_model: String,
+    role: String,
 }
 
 #[tonic::async_trait]
@@ -136,6 +137,7 @@ impl ExternalProcessor for ExtProcMock {
 
         let epp_upstream = self.epp_upstream.clone();
         let bbr_model = self.bbr_model.clone();
+        let role = self.role.clone();
 
         // Spawn a task to read inbound messages and respond
         tokio::spawn(async move {
@@ -149,6 +151,9 @@ impl ExternalProcessor for ExtProcMock {
                         match pr.request {
                             Some(processing_request::Request::RequestHeaders(_hdrs)) => {
                                 // On headers: send a HeadersResponse with header_mutation
+                                if role == "EPP" {
+                                    eprintln!("extproc_mock: mock selected endpoint (EPP): {}", epp_upstream);
+                                }
                                 let resp = ProcessingResponse {
                                     response: Some(processing_response::Response::RequestHeaders(
                                         build_headers_response(&epp_upstream, &bbr_model),
@@ -174,6 +179,15 @@ impl ExternalProcessor for ExtProcMock {
                                 }
 
                                 // Send a BodyResponse that carries header mutation with the (possibly updated) model
+                                if role == "EPP" {
+                                    eprintln!(
+                                        "extproc_mock: streaming - mock selected endpoint (EPP): {}, model: {}",
+                                        epp_upstream,
+                                        current_bbr_model
+                                    );
+                                } else {
+                                    eprintln!("extproc_mock: streaming - BBR model: {}", current_bbr_model);
+                                }
                                 let resp = ProcessingResponse {
                                     response: Some(processing_response::Response::RequestBody(
                                         build_body_response(&epp_upstream, &current_bbr_model),
@@ -239,10 +253,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // Configuration (can override with env)
     let epp_upstream = env::var("EPP_UPSTREAM").unwrap_or_else(|_| "host.docker.internal:18080".to_string());
     let bbr_model = env::var("BBR_MODEL").unwrap_or_else(|_| "bbr-chosen-model".to_string());
+    let default_role = if addr.port() == 9001 { "EPP" } else if addr.port() == 9000 { "BBR" } else { "EPP" };
+    let role = env::var("MOCK_ROLE").unwrap_or_else(|_| default_role.to_string());
+
+    println!("extproc_mock: role={}, configured EPP_UPSTREAM={}, BBR_MODEL={}", role, epp_upstream, bbr_model);
 
     let svc = ExtProcMock {
         epp_upstream,
         bbr_model,
+        role,
     };
 
     println!("extproc_mock listening on {}", addr);
