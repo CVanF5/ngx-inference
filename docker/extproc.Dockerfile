@@ -11,8 +11,6 @@ WORKDIR /work
 RUN apt-get update && apt-get install -y --no-install-recommends \
     clang \
     && apt-get dist-clean
-
-
 # Copy source
 COPY . .
 

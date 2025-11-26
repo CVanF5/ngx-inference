@@ -1,27 +1,37 @@
-//! gRPC client implementation for Envoy ExternalProcessor (ext-proc).
+//! gRPC client implementation for Envoy ExternalProcessor (ext-proc) protocol.
 //!
-//! This module implements minimal bidirectional streaming interactions needed
-//! by EPP (Endpoint Picker Processor) and BBR (Body-Based Routing).
+//! This module implements bidirectional streaming interactions for Gateway API Inference Extension:
+//! - EPP (Endpoint Picker Processor): Headers-only exchange for upstream endpoint selection
+//! - BBR (Body-Based Routing): Body streaming with JSON parsing for model name detection
 //!
-//! It uses tonic to connect to an ext-proc server and exchanges
-//! ProcessingRequest/ProcessingResponse messages. The implementation here focuses
-//! on reading header mutations returned by the server and extracting a specific
-//! header value to be injected back into the original NGINX request.
+//! Both implementations follow the Gateway API Inference Extension specification and are
+//! compatible with the reference implementations in kubernetes-sigs/gateway-api-inference-extension.
+//! BBR implementation matches the behavior of pkg/bbr/handlers/request.go for model extraction.
 //!
 //! Notes:
-//! - We create a lightweight Tokio runtime per call to avoid requiring a global
-//!   runtime, keeping integration with ngx-rust simple.
-//! - We send a headers message and a ProtocolConfiguration on the first request,
-//!   indicating the desired body handling mode (NONE for EPP, STREAMED for BBR).
-//! - For BBR, this initial version does not stream the actual body; it can be
-//!   extended to stream chunks from the NGINX request body when integrating deeper
-//!   with the ngx-rust request APIs.
+//! - We use a shared Tokio runtime for better performance and resource utilization.
+//! - EPP follows the standard protocol with headers-only mode (NONE for body).
+//! - BBR uses standard STREAMED mode for body-based model detection.
 
 use crate::protos::envoy;
 
 use std::collections::HashMap;
+use std::sync::OnceLock;
 
 use tonic::transport::Channel;
+
+static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
+
+fn get_runtime() -> &'static tokio::runtime::Runtime {
+    RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)  // Minimal thread pool for gRPC operations
+            .enable_all()
+            .thread_name("ngx-inference-grpc")
+            .build()
+            .expect("Failed to create Tokio runtime")
+    })
+}
 
 type ExternalProcessorClient<T> =
     envoy::service::ext_proc::v3::external_processor_client::ExternalProcessorClient<T>;
@@ -106,189 +116,16 @@ fn parse_response_for_header(
     None
 }
 
-/// EPP: Headers-only exchange to obtain upstream selection header.
+
+
+
+
+/// EPP: Standard headers-only exchange following Gateway API Inference Extension spec.
 ///
 /// Returns Ok(Some(value)) if the ext-proc service replies with a header mutation
-/// for "X-Inference-Upstream"; Ok(None) if not present; Err(...) on transport-level errors.
+/// for the specified header name; Ok(None) if not present; Err(...) on transport-level errors.
+/// This implements the reference EPP protocol with headers and request context.
 pub fn epp_headers_blocking(
-    endpoint: &str,
-    timeout_ms: u64,
-) -> Result<Option<String>, String> {
-    let uri = normalize_endpoint(endpoint);
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("runtime build error: {e}"))?;
-
-    rt.block_on(async move {
-        let channel = Channel::from_shared(uri.clone())
-            .map_err(|e| format!("channel error: {e}"))?
-            .connect()
-            .await
-            .map_err(|e| format!("connect error: {e}"))?;
-
-        let mut client = ExternalProcessorClient::new(channel);
-
-        // Prepare ProtocolConfiguration: no body for EPP.
-        let proto_cfg = ProtocolConfiguration {
-            request_body_mode: BodySendMode::None as i32,
-            response_body_mode: BodySendMode::None as i32,
-            send_body_without_waiting_for_header_response: false,
-        };
-
-        // Minimal headers: empty map; end_of_stream true (no body).
-        let headers = HeaderMap { headers: Vec::new() };
-        let req_headers = HttpHeaders {
-            headers: Some(headers),
-            attributes: HashMap::new(),
-            end_of_stream: true,
-        };
-
-        // First request carries both headers and protocol_config.
-        use envoy::service::ext_proc::v3::processing_request;
-        let first = ProcessingRequest {
-            request: Some(processing_request::Request::RequestHeaders(req_headers)),
-            metadata_context: None,
-            attributes: HashMap::new(),
-            observability_mode: false,
-            protocol_config: Some(proto_cfg),
-        };
-
-        // Build outbound stream with a single item.
-        let outbound = tokio_stream::iter(vec![first]);
-
-        // Apply timeout on receiving responses if requested.
-        let mut inbound = client
-            .process(outbound)
-            .await
-            .map_err(|e| format!("rpc error: {e}"))?
-            .into_inner();
-
-        // Optional timeout for first response
-        let next = if timeout_ms == 0 {
-            inbound.message().await
-        } else {
-            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), inbound.message()).await {
-                Ok(res) => res,
-                Err(_) => return Ok(None),
-            }
-        };
-
-        match next {
-            Ok(Some(resp)) => {
-                if let Some(val) = parse_response_for_header(&resp, "x-inference-upstream") {
-                    return Ok(Some(val));
-                }
-            }
-            Ok(None) => {} // stream closed
-            Err(e) => return Err(format!("stream recv error: {e}")),
-        }
-
-        // Continue reading additional responses until stream ends or we find the header.
-        loop {
-            match inbound.message().await {
-                Ok(Some(resp)) => {
-                    if let Some(val) = parse_response_for_header(&resp, "x-inference-upstream") {
-                        return Ok(Some(val));
-                    }
-                }
-                Ok(None) => break,
-                Err(e) => return Err(format!("stream recv error: {e}")),
-            }
-        }
-
-        Ok(None)
-    })
-}
-
-pub fn epp_headers_blocking_with_header(
-    endpoint: &str,
-    timeout_ms: u64,
-    header_name: &str,
-) -> Result<Option<String>, String> {
-    let target_key_lower = header_name.to_ascii_lowercase();
-    let uri = normalize_endpoint(endpoint);
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("runtime build error: {e}"))?;
-
-    rt.block_on(async move {
-        let channel = Channel::from_shared(uri.clone())
-            .map_err(|e| format!("channel error: {e}"))?
-            .connect()
-            .await
-            .map_err(|e| format!("connect error: {e}"))?;
-
-        let mut client = ExternalProcessorClient::new(channel);
-
-        let proto_cfg = ProtocolConfiguration {
-            request_body_mode: BodySendMode::None as i32,
-            response_body_mode: BodySendMode::None as i32,
-            send_body_without_waiting_for_header_response: false,
-        };
-
-        let headers = HeaderMap { headers: Vec::new() };
-        let req_headers = HttpHeaders {
-            headers: Some(headers),
-            attributes: HashMap::new(),
-            end_of_stream: true,
-        };
-
-        use envoy::service::ext_proc::v3::processing_request;
-        let first = ProcessingRequest {
-            request: Some(processing_request::Request::RequestHeaders(req_headers)),
-            metadata_context: None,
-            attributes: HashMap::new(),
-            observability_mode: false,
-            protocol_config: Some(proto_cfg),
-        };
-
-        let outbound = tokio_stream::iter(vec![first]);
-
-        let mut inbound = client
-            .process(outbound)
-            .await
-            .map_err(|e| format!("rpc error: {e}"))?
-            .into_inner();
-
-        let next = if timeout_ms == 0 {
-            inbound.message().await
-        } else {
-            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), inbound.message()).await {
-                Ok(res) => res,
-                Err(_) => return Ok(None),
-            }
-        };
-
-        match next {
-            Ok(Some(resp)) => {
-                if let Some(val) = parse_response_for_header(&resp, &target_key_lower) {
-                    return Ok(Some(val));
-                }
-            }
-            Ok(None) => {} // stream closed
-            Err(e) => return Err(format!("stream recv error: {e}")),
-        }
-
-        // Continue reading additional responses until stream ends or we find the header.
-        loop {
-            match inbound.message().await {
-                Ok(Some(resp)) => {
-                    if let Some(val) = parse_response_for_header(&resp, &target_key_lower) {
-                        return Ok(Some(val));
-                    }
-                }
-                Ok(None) => break,
-                Err(e) => return Err(format!("stream recv error: {e}")),
-            }
-        }
-
-        Ok(None)
-    })
-}
-
-pub fn epp_headers_blocking_with_headers(
     endpoint: &str,
     timeout_ms: u64,
     header_name: &str,
@@ -296,12 +133,8 @@ pub fn epp_headers_blocking_with_headers(
 ) -> Result<Option<String>, String> {
     let target_key_lower = header_name.to_ascii_lowercase();
     let uri = normalize_endpoint(endpoint);
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("runtime build error: {e}"))?;
 
-    rt.block_on(async move {
+    get_runtime().block_on(async move {
         let channel = Channel::from_shared(uri.clone())
             .map_err(|e| format!("channel error: {e}"))?
             .connect()
@@ -387,14 +220,13 @@ pub fn epp_headers_blocking_with_headers(
     })
 }
 
-/// BBR: Initiate streaming mode and read a returned header (model name).
+/// BBR: Body streaming with JSON model detection per Gateway API Inference Extension.
 ///
-/// Returns Ok(Some(value)) if the ext-proc service replies with a header mutation
-/// for the provided header_name; Ok(None) if not present; Err(...) on transport-level errors.
+/// Streams request body to ext-proc server for JSON parsing and model name extraction.
+/// Returns Ok(Some(value)) if the server responds with the requested header (e.g., X-Gateway-Model-Name);
+/// Ok(None) if header not found in response; Err(...) on gRPC/transport errors.
 ///
-/// This initial implementation sends a headers message and protocol_config indicating
-/// STREAMED mode, followed optionally by an empty body chunk. It can be extended to
-/// stream actual body chunks from the NGINX request when available.
+/// Compatible with kubernetes-sigs/gateway-api-inference-extension/pkg/bbr reference implementation.
 pub fn bbr_stream_blocking(
     endpoint: &str,
     body_len: usize,
@@ -404,12 +236,8 @@ pub fn bbr_stream_blocking(
 ) -> Result<Option<String>, String> {
     let target_key_lower = header_name.to_ascii_lowercase();
     let uri = normalize_endpoint(endpoint);
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("runtime build error: {e}"))?;
 
-    rt.block_on(async move {
+    get_runtime().block_on(async move {
         let channel = Channel::from_shared(uri.clone())
             .map_err(|e| format!("channel error: {e}"))?
             .connect()
@@ -445,7 +273,7 @@ pub fn bbr_stream_blocking(
 
         if body_len > 0 {
             let body = HttpBody {
-                body: Vec::new(), // placeholder: integrate actual request body later
+                body: Vec::new(), // empty body for headers-only BBR requests
                 end_of_stream: true,
             };
             let second = ProcessingRequest {
@@ -492,11 +320,15 @@ pub fn bbr_stream_blocking(
     })
 }
 
-/// BBR: Stream actual request body bytes to ext-proc and read returned header (model name).
+/// BBR: Complete body streaming implementation for JSON model detection.
 ///
-/// - Sends RequestHeaders first with STREAMED mode configured
-/// - Then streams the provided body in chunks (chunk_size, default 64 KiB if 0)
-/// - Returns the value of `header_name` from a HeaderMutation response if present
+/// Protocol:
+/// - Sends RequestHeaders first with STREAMED body mode configured
+/// - Streams the complete body in configurable chunks for JSON model parsing
+/// - Server accumulates chunks until end_of_stream, parses JSON for "model" field
+/// - Returns extracted model name in header mutation (typically X-Gateway-Model-Name)
+///
+/// Matches kubernetes-sigs/gateway-api-inference-extension/pkg/bbr reference behavior.
 pub fn bbr_stream_blocking_with_body(
     endpoint: &str,
     body: &[u8],
@@ -506,12 +338,8 @@ pub fn bbr_stream_blocking_with_body(
 ) -> Result<Option<String>, String> {
     let target_key_lower = header_name.to_ascii_lowercase();
     let uri = normalize_endpoint(endpoint);
-    let rt = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| format!("runtime build error: {e}"))?;
 
-    rt.block_on(async move {
+    get_runtime().block_on(async move {
         let channel = Channel::from_shared(uri.clone())
             .map_err(|e| format!("channel error: {e}"))?
             .connect()

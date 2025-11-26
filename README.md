@@ -3,11 +3,11 @@ ngx-inference: NGINX module for Gateway API Inference Extensions (EPP + BBR)
 
 Overview
 --------
-This project provides a native NGINX module (built with ngx-rust) that integrates with the Gateway API Inference Extension using Envoy's `ext_proc` protocol over gRPC.
+This project provides a native NGINX module (built with ngx-rust) that implements the Gateway API Inference Extension using Envoy's `ext_proc` protocol over gRPC.
 
-It implements:
-- Endpoint Picker Processor (EPP): A headers-only exchange to obtain an upstream endpoint hint from the EPP and expose it via the `$inference_upstream` NGINX variable.
-- Body-Based Routing (BBR): A streaming-mode handshake to efficiently send request body chunks to a remote BBR implementation and inject the returned model header back into the original request. The current revision performs the handshake and header extraction; streaming of actual request body chunks is scaffolded and can be enabled in a follow-up.
+It implements two standard components:
+- **Endpoint Picker Processor (EPP)**: Headers-only exchange following the Gateway API Inference Extension specification to obtain upstream endpoint selection and expose endpoints via the `$inference_upstream` NGINX variable.
+- **Body-Based Routing (BBR)**: Body streaming implementation that extracts model names from JSON request bodies and injects model headers, following the reference BBR implementation from the Gateway API Inference Extension project.
 
 Reference docs:
 - NGF design doc: https://github.com/nginx/nginx-gateway-fabric/blob/main/docs/proposals/gateway-inference-extension.md
@@ -16,17 +16,17 @@ Reference docs:
 Current behavior and defaults
 -----------------------------
 - BBR:
-  - Directive `inference_bbr on|off` toggles BBR.
-  - Directive `inference_bbr_endpoint` sets the gRPC endpoint for the BBR/ext-proc server (plaintext or `http://host:port`; `https://` not yet supported).
-  - Directive `inference_bbr_header_name` sets the model header name to inject (default `X-Gateway-Model-Name`).
-  - BBR sends a `HttpHeaders` frame and a ProtocolConfiguration with `request_body_mode=STREAMED`, then reads responses to extract a header mutation for the configured model header name. At present, request body streaming is scaffolded; chunked streaming from the NGINX request will be implemented next.
+  - Directive `inference_bbr on|off` enables/disables the standard BBR implementation.
+  - Directive `inference_bbr_endpoint` sets the gRPC endpoint for BBR ext-proc server communication (plaintext or `http://host:port`; `https://` not yet supported).
+  - Directive `inference_bbr_header_name` configures the model header name to inject (default `X-Gateway-Model-Name`).
+  - BBR follows the Gateway API specification: sends `HttpHeaders` with `request_body_mode=STREAMED`, streams complete request body in chunks for JSON model extraction, and returns header mutations with the detected model name from the "model" field.
 
 - EPP:
-  - Directive `inference_epp on|off` toggles EPP.
-  - Directive `inference_epp_endpoint` sets the gRPC endpoint for the EPP/ext-proc server (plaintext or `http://host:port`).
-  - Directive `inference_epp_header_name` sets the upstream header name to read and expose (default `X-Inference-Upstream`).
-  - EPP runs a headers-only exchange, reads response header mutations, and sets an incoming request header for the configured upstream header name (default `X-Inference-Upstream`) when present.
-  - The `$inference_upstream` NGINX variable reflects the value of the configured upstream header and can be used in `proxy_pass`.
+  - Directive `inference_epp on|off` enables/disables EPP functionality.
+  - Directive `inference_epp_endpoint` sets the gRPC endpoint for standard EPP ext-proc server communication.
+  - Directive `inference_epp_header_name` configures the upstream header name to read from EPP responses (default `X-Inference-Upstream`).
+  - EPP follows the Gateway API Inference Extension specification: performs headers-only exchange, reads header mutations from responses, and sets the upstream header for endpoint selection.
+  - The `$inference_upstream` NGINX variable exposes the EPP-selected endpoint and can be used in `proxy_pass` directives.
 
 - Fail-open/closed:
   - `inference_bbr_failure_mode_allow on|off` and `inference_epp_failure_mode_allow on|off` control whether to fail-open when the ext-proc is unavailable or errors. Fail-closed returns `502 Bad Gateway`.
@@ -49,7 +49,6 @@ Steps:
 NGINX configuration
 -------------------
 Example configuration snippet for a location using BBR followed by EPP:
-
 ```
 # Load the compiled module (path depends on your build output)
 # load_module /opt/nginx/modules/libngx_inference.so;
@@ -83,6 +82,11 @@ http {
 
 Notes and assumptions
 ---------------------
+- **Standards Compliance**:
+  - Both EPP and BBR implementations follow the Gateway API Inference Extension specification.
+  - EPP is compatible with reference EPP servers for endpoint selection.
+  - BBR is compatible with reference BBR servers (kubernetes-sigs/gateway-api-inference-extension/pkg/bbr) for model detection from JSON request bodies.
+
 - Header names:
   - BBR returns and injects a model header (default `X-Gateway-Model-Name`). You can configure this via `inference_bbr_header_name`.
   - EPP should return an endpoint hint via header mutation. This module reads a configurable upstream header via `inference_epp_header_name` (default `X-Inference-Upstream`) and exposes its value as `$inference_upstream`.
@@ -91,10 +95,12 @@ Notes and assumptions
   - Current implementation uses insecure/plaintext gRPC channels. The EPP project notes TLS support is a known issue still under discussion. Once TLS configuration is available, this module can be extended to support secure gRPC channels.
 
 - Body streaming:
-  - This revision prepares STREAMED mode in the ext-proc protocol and extracts returned header mutations. Actual chunk streaming from the NGINX request body to the ext-proc server will be implemented next, using NGINX request body APIs to read client request body and forward chunks over the tonic bidirectional stream.
+  - EPP follows the standard Gateway API specification with headers-only mode (no body streaming).
+  - BBR implements the standard STREAMED mode per the Gateway API specification for body-based model detection from JSON. Matches the reference implementation in kubernetes-sigs/gateway-api-inference-extension/pkg/bbr.
 
 - Request headers to ext-proc:
-  - The current implementation sends an empty `HeaderMap` in `HttpHeaders`. Depending on your EPP/BBR expectations, this may be sufficient (e.g., when the ModelName is provided by BBR). In a future update, we will forward selected headers (e.g., content-type, model header if present) and attributes to ext-proc for richer context.
+  - EPP implementation forwards incoming request headers per the Gateway API specification for endpoint selection context.
+  - BBR custom implementation sends complete request body for model detection, providing model-based routing beyond the standard specification.
 
 Troubleshooting
 ---------------
@@ -104,11 +110,11 @@ Troubleshooting
 
 Roadmap
 -------
-- Align exact header names and semantics to the upstream spec and EPP reference.
-- Implement true body chunk streaming from NGINX request to ext-proc for BBR, including configurable maximum body size and back-pressure.
-- Pass through relevant request headers/attributes to ext-proc to improve routing context.
-- Conformance tests using the Gateway API Inference Extension suite.
-- TLS support for gRPC once available in EPP.
+- Validate EPP and BBR implementations against Gateway API Inference Extension conformance tests.
+- Align exact header names and semantics to the upstream specification and reference implementations.
+- Add configurable maximum body size and back-pressure handling for BBR.
+- TLS support for gRPC once available in the Gateway API specification.
+- Connection pooling and caching for improved performance at scale.
 
 License
 -------

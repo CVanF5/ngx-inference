@@ -35,15 +35,15 @@ fn get_header_in<'a>(request: &'a http::Request, key: &str) -> Option<&'a str> {
 
 // Inference module for Gateway API inference extensions.
 // Pipeline (request path):
-//   1) Optional BBR (Body-Based Routing): stream/buffer request body to remote ext-proc server,
-//      receive a model name, and set header X-Gateway-Model-Name.
-//   2) Optional EPP (Endpoint Picker Processor): send request context to remote ext-proc,
-//      receive upstream endpoint, and set a request-scoped header X-Inference-Upstream.
+//   1) Optional BBR (Body-Based Routing): Standard extension that streams request body to
+//      remote ext-proc server to detect model name from JSON and set header X-Gateway-Model-Name.
+//      Follows the reference BBR implementation in the Gateway API Inference Extension.
+//   2) Standard EPP (Endpoint Picker Processor): Follows the reference specification to
+//      send request context to remote ext-proc, receive upstream endpoint, and set header
+//      X-Inference-Upstream per the Gateway API Inference Extension protocol.
 //
-// Note: This skeleton wires NGINX directives, module config, access phase handler,
-// and exposes $inference_upstream variable from header X-Inference-Upstream.
-// The gRPC ext-proc client integration (Envoy ExternalProcessor bidi stream) is left
-// as a follow-up (tonic/prost, vendored Envoy protos). TODO markers indicate where to integrate.
+// Note: Both EPP and BBR implementations follow the Gateway API Inference Extension
+// specification and reference implementations.
 
 struct Module;
 
@@ -92,7 +92,7 @@ struct ModuleConfig {
     // BBR (Body-Based Routing)
     bbr_enable: bool,
     bbr_endpoint: Option<String>, // host:port (plaintext) or scheme://host:port
-    bbr_chunk_size: usize,        // <= 65536 recommended
+    bbr_chunk_size: usize,        // 1KB-64KB range (1024-65536 bytes)
     bbr_timeout_ms: u64,
     bbr_failure_mode_allow: bool, // fail-open if ext-proc unavailable
     bbr_header_name: String,      // default "X-Gateway-Model-Name"
@@ -262,7 +262,7 @@ extern "C" fn ngx_http_inference_set_bbr_endpoint(
     core::NGX_CONF_OK
 }
 
-// inference_bbr_chunk_size N (<= 65536 recommended)
+// inference_bbr_chunk_size N (1024-65536 bytes, for streaming body chunks to BBR server)
 extern "C" fn ngx_http_inference_set_bbr_chunk_size(
     cf: *mut ngx_conf_t,
     _cmd: *mut ngx_command_t,
@@ -280,15 +280,24 @@ extern "C" fn ngx_http_inference_set_bbr_chunk_size(
             }
         };
 
-        if set_usize(&mut conf.bbr_chunk_size, val).is_err() {
-            ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_chunk_size` must be usize");
-            return core::NGX_CONF_ERROR;
+        match set_usize(&mut conf.bbr_chunk_size, val) {
+            Ok(()) => {
+                // Validate chunk size is within reasonable bounds (1KB to 64KB)
+                if conf.bbr_chunk_size < 1024 || conf.bbr_chunk_size > 65536 {
+                    ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_chunk_size` must be between 1024 and 65536 bytes");
+                    return core::NGX_CONF_ERROR;
+                }
+            }
+            Err(_) => {
+                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_chunk_size` must be usize");
+                return core::NGX_CONF_ERROR;
+            }
         }
     }
     core::NGX_CONF_OK
 }
 
-// inference_bbr_timeout_ms N
+// inference_bbr_timeout_ms N (gRPC timeout for BBR server communication, default 200ms)
 extern "C" fn ngx_http_inference_set_bbr_timeout_ms(
     cf: *mut ngx_conf_t,
     _cmd: *mut ngx_command_t,
@@ -418,7 +427,7 @@ extern "C" fn ngx_http_inference_set_epp_endpoint(
     core::NGX_CONF_OK
 }
 
-// inference_epp_timeout_ms N
+// inference_epp_timeout_ms N (gRPC timeout for EPP server communication, default 200ms)
 extern "C" fn ngx_http_inference_set_epp_timeout_ms(
     cf: *mut ngx_conf_t,
     _cmd: *mut ngx_command_t,
@@ -615,8 +624,8 @@ pub static mut ngx_http_inference_module: ngx_module_t = ngx_module_t {
 };
 
 // -------------------- Variable: $inference_upstream --------------------
-// Exposed as the value of request header "X-Inference-Upstream" set by EPP stage.
-// Use in NGINX config with: proxy_pass http://$inference_upstream;
+// Exposes the value of the "X-Inference-Upstream" header set by EPP for upstream selection.
+// Usage: proxy_pass http://$inference_upstream; (configured endpoint from EPP response)
 
 http_variable_get!(inference_upstream_var_get, |request: &mut http::Request, v: *mut ngx::ffi::ngx_variable_value_t, _data: usize| {
     // Evaluate $inference_upstream from "X-Inference-Upstream" header
@@ -665,7 +674,7 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
         conf.epp_enable
     );
 
-    // 1) BBR: if enabled, stream/buffer body to remote BBR ext-proc and set header
+    // Stage 1: BBR (Body-Based Routing) - stream request body to ext-proc for JSON model detection
     if conf.bbr_enable {
         // Initiate asynchronous reading of the client request body.
         unsafe {
@@ -693,7 +702,7 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
         }
     }
 
-    // 2) EPP: if enabled, call EPP ext-proc to pick upstream and set X-Inference-Upstream
+    // Stage 2: EPP (Endpoint Picker Processor) - headers-only exchange for upstream selection
     if conf.epp_enable {
         match epp_pick_upstream(request, conf) {
             Ok(()) => {
@@ -713,7 +722,7 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
     core::Status::NGX_DECLINED
 });
 
- // -------------------- Core Pipeline (placeholders for gRPC integration) --------------------
+ // -------------------- Core Pipeline Implementation --------------------
 
 // Body read handler: called after ngx_http_read_client_request_body finishes reading.
 extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_request_t) {
@@ -746,9 +755,14 @@ extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_request_t) {
         }
 
         // Collect in-memory request body buffers into a contiguous Vec<u8>.
-        // Note: For large bodies NGINX may spill to temp files; this initial version
+        // Pre-allocate based on Content-Length if available for better performance.
+        // Note: For large bodies NGINX may spill to temp files; this implementation
         // handles in-memory buffers and can be extended to read file-backed buffers.
-        let mut body: Vec<u8> = Vec::new();
+        let content_length = get_header_in(request, "Content-Length")
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(0);
+        let mut body: Vec<u8> = Vec::with_capacity(content_length);
+
         let rb = (*r).request_body;
         if !rb.is_null() {
             let mut cl = (*rb).bufs;
@@ -802,51 +816,6 @@ extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_request_t) {
     }
 }
 
-fn bbr_process(request: &mut http::Request, conf: &ModuleConfig) -> Result<(), &'static str> {
-    // Recommended chunk size <= 64 KiB
-    let chunk_size = if conf.bbr_chunk_size == 0 {
-        64 * 1024
-    } else {
-        conf.bbr_chunk_size.min(64 * 1024)
-    };
-
-    // If BBR endpoint is not configured, skip.
-    let endpoint = match &conf.bbr_endpoint {
-        Some(e) if !e.is_empty() => e.as_str(),
-        _ => return Ok(()),
-    };
-
-    let header_name = conf.bbr_header_name.as_str();
-
-    // If header already present, respect it and skip BBR.
-    if get_header_in(request, header_name).is_some() {
-        return Ok(());
-    }
-
-    // Determine body length from Content-Length header if present; default to 0.
-    let body_len = get_header_in(request, "Content-Length")
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(0usize);
-
-    // Call gRPC client scaffold; when we implement streaming, this will send headers/body
-    // and read returned header mutations.
-    match crate::grpc::bbr_stream_blocking(endpoint, body_len, chunk_size, header_name, conf.bbr_timeout_ms) {
-        Ok(Some(val)) => {
-            // Set returned header into headers_in for downstream consumption.
-            let _ = request.add_header_in(header_name, &val);
-        }
-        Ok(None) => {
-            // No header returned; noop
-        }
-        Err(_err) => {
-            // Transport-level error; map to static str to satisfy signature.
-            return Err("bbr grpc error");
-        }
-    }
-
-    Ok(())
-}
-
 fn epp_pick_upstream(request: &mut http::Request, conf: &ModuleConfig) -> Result<(), &'static str> {
     // If EPP endpoint is not configured, skip.
     let endpoint = match &conf.epp_endpoint {
@@ -869,7 +838,7 @@ fn epp_pick_upstream(request: &mut http::Request, conf: &ModuleConfig) -> Result
             hdrs.push((n.to_string(), v.to_string()));
         }
     }
-    match crate::grpc::epp_headers_blocking_with_headers(endpoint, conf.epp_timeout_ms, upstream_header_str, hdrs) {
+    match crate::grpc::epp_headers_blocking(endpoint, conf.epp_timeout_ms, upstream_header_str, hdrs) {
         Ok(Some(val)) => {
             // Write upstream selection header for variable consumption.
             let _ = request.add_header_in(upstream_header_str, &val);

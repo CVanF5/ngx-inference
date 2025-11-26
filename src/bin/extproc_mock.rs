@@ -1,25 +1,31 @@
-//! Minimal Envoy ExternalProcessor (ext-proc) mock server for testing ngx-inference.
+//! Standard BBR (Body-Based Routing) and EPP (Endpoint Picker Processor) mock server.
 //!
-//! Behavior:
-//! - On receiving RequestHeaders: immediately respond with a HeadersResponse that can include:
-//!     * X-Inference-Upstream    (EPP) -> default "host.docker.internal:18080" (overridable)
-//!     * X-Gateway-Model-Name    (BBR) -> default "bbr-chosen-model"          (overridable)
-//! - On receiving RequestBody chunks (STREAMED mode): it also responds with a BodyResponse
-//!   containing the same header mutation (helpful for BBR flows that expect responses while streaming).
+//! This implements the Gateway API Inference Extension protocols:
+//! - BBR: Streams request body, detects model from JSON, returns X-Gateway-Model-Name header
+//! - EPP: Headers-only exchange, returns X-Inference-Upstream header for endpoint selection
 //!
-//! Configuration via environment variables (optional):
+//! Behavior matches reference implementations:
+//! - BBR: kubernetes-sigs/gateway-api-inference-extension/pkg/bbr
+//! - EPP: kubernetes-sigs/gateway-api-inference-extension/pkg/epp
+//!
+//! BBR Mode (port 9000):
+//! - On RequestHeaders: waits for body streaming
+//! - On RequestBody chunks: accumulates until EndOfStream
+//! - Parses JSON for "model" field, extracts value for X-Gateway-Model-Name header
+//!
+//! EPP Mode (port 9001):
+//! - On RequestHeaders: immediately responds with X-Inference-Upstream header
+//!
+//! Configuration via environment variables:
 //! - EPP_UPSTREAM: value for X-Inference-Upstream (default: "host.docker.internal:18080")
-//! - BBR_MODEL:    value for X-Gateway-Model-Name (default: "bbr-chosen-model")
+//! - BBR_MODEL: fallback model name if not found in JSON (default: "bbr-chosen-model")
 //!
 //! CLI:
-//!   cargo run --bin extproc_mock -- 0.0.0.0:9001
-//!   cargo run --bin extproc_mock -- 0.0.0.0:9000
+//!   cargo run --bin extproc_mock -- 0.0.0.0:9001  # EPP mode
+//!   cargo run --bin extproc_mock -- 0.0.0.0:9000  # BBR mode
 //!
-//! Notes:
-//! - This mock sets both headers on both header/body responses. The ngx-inference module will
-//!   pick whichever header it is configured to look for (EPP/BBR). Setting both keeps the mock simple.
-//! - For end-to-end proxying, ensure nginx.conf has a working resolver (e.g. 127.0.0.11 in Docker)
-//!   and that the upstream you set is reachable (e.g. run: python3 -m http.server 18080).
+//! For end-to-end proxying, ensure nginx.conf has a working resolver (e.g. 127.0.0.11 in Docker)
+//! and that the upstream you set is reachable (e.g. run: python3 -m http.server 18080).
 
 use std::{env, net::SocketAddr};
 
@@ -79,11 +85,10 @@ fn build_header_mutation_headers(epp_upstream: &str) -> HeaderMutation {
     }
 }
 
-fn build_header_mutation_body(epp_upstream: &str, bbr_model: &str) -> HeaderMutation {
+fn build_header_mutation_bbr(bbr_model: &str) -> HeaderMutation {
     HeaderMutation {
         set_headers: vec![
             hvo("X-Gateway-Model-Name", bbr_model),
-            hvo("X-Inference-Upstream", epp_upstream),
         ],
         remove_headers: Vec::new(),
     }
@@ -102,8 +107,8 @@ fn build_headers_response(epp_upstream: &str, _bbr_model: &str) -> HeadersRespon
     }
 }
 
-fn build_body_response(epp_upstream: &str, bbr_model: &str) -> BodyResponse {
-    let mutation = build_header_mutation_body(epp_upstream, bbr_model);
+fn build_body_response(_epp_upstream: &str, bbr_model: &str) -> BodyResponse {
+    let mutation = build_header_mutation_bbr(bbr_model);
     envoy::service::ext_proc::v3::BodyResponse {
         response: Some(envoy::service::ext_proc::v3::CommonResponse {
             status: CommonResponse::Continue as i32,
@@ -150,54 +155,64 @@ impl ExternalProcessor for ExtProcMock {
                     Ok(pr) => {
                         match pr.request {
                             Some(processing_request::Request::RequestHeaders(_hdrs)) => {
-                                // On headers: send a HeadersResponse with header_mutation
+                                // EPP mode: respond immediately with X-Inference-Upstream
+                                // BBR mode: wait for body streaming (no immediate response)
                                 if role == "EPP" {
-                                    eprintln!("extproc_mock: mock selected endpoint (EPP): {}", epp_upstream);
+                                    eprintln!("extproc_mock: EPP headers received, selecting endpoint: {}", epp_upstream);
+                                    let resp = ProcessingResponse {
+                                        response: Some(processing_response::Response::RequestHeaders(
+                                            build_headers_response(&epp_upstream, &bbr_model),
+                                        )),
+                                        dynamic_metadata: None,
+                                        mode_override: None,
+                                        override_message_timeout: None,
+                                    };
+                                    if tx.send(Ok(resp)).await.is_err() {
+                                        break;
+                                    }
+                                    sent_headers_response = true;
+                                } else {
+                                    // BBR mode: just log but don't respond yet, wait for body
+                                    eprintln!("extproc_mock: BBR headers received, waiting for body...");
                                 }
-                                let resp = ProcessingResponse {
-                                    response: Some(processing_response::Response::RequestHeaders(
-                                        build_headers_response(&epp_upstream, &bbr_model),
-                                    )),
-                                    dynamic_metadata: None,
-                                    mode_override: None,
-                                    override_message_timeout: None,
-                                };
-                                if tx.send(Ok(resp)).await.is_err() {
-                                    break;
-                                }
-                                sent_headers_response = true;
                             }
                             Some(processing_request::Request::RequestBody(body)) => {
-                                // Accumulate request body and attempt to parse OpenAI-style JSON to extract "model"
-                                // Example: {"model":"gpt-4o-mini","input":"Hello", ...}
+                                // Accumulate request body chunks
                                 body_buf.extend_from_slice(&body.body);
-                                if let Ok(v) = serde_json::from_slice::<Value>(&body_buf) {
-                                    if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
-                                        current_bbr_model = m.to_string();
-                                        eprintln!("extproc_mock: detected model in body: {}", current_bbr_model);
-                                    }
-                                }
 
-                                // Send a BodyResponse that carries header mutation with the (possibly updated) model
-                                if role == "EPP" {
-                                    eprintln!(
-                                        "extproc_mock: streaming - mock selected endpoint (EPP): {}, model: {}",
-                                        epp_upstream,
-                                        current_bbr_model
-                                    );
+                                // Check if this is the end of stream
+                                if body.end_of_stream {
+                                    eprintln!("extproc_mock: end of stream, body size: {} bytes", body_buf.len());
+
+                                    // Parse JSON to extract model name (BBR behavior)
+                                    if let Ok(v) = serde_json::from_slice::<Value>(&body_buf) {
+                                        if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
+                                            current_bbr_model = m.to_string();
+                                            eprintln!("extproc_mock: detected model in JSON body: {}", current_bbr_model);
+                                        }
+                                    }
+
+                                    // Send response with X-Gateway-Model-Name header
+                                    let resp = ProcessingResponse {
+                                        response: Some(processing_response::Response::RequestBody(
+                                            build_body_response(&epp_upstream, &current_bbr_model),
+                                        )),
+                                        dynamic_metadata: None,
+                                        mode_override: None,
+                                        override_message_timeout: None,
+                                    };
+
+                                    if role == "BBR" {
+                                        eprintln!("extproc_mock: BBR final response - model: {}", current_bbr_model);
+                                    }
+
+                                    if tx.send(Ok(resp)).await.is_err() {
+                                        break;
+                                    }
                                 } else {
-                                    eprintln!("extproc_mock: streaming - BBR model: {}", current_bbr_model);
-                                }
-                                let resp = ProcessingResponse {
-                                    response: Some(processing_response::Response::RequestBody(
-                                        build_body_response(&epp_upstream, &current_bbr_model),
-                                    )),
-                                    dynamic_metadata: None,
-                                    mode_override: None,
-                                    override_message_timeout: None,
-                                };
-                                if tx.send(Ok(resp)).await.is_err() {
-                                    break;
+                                    // Not end of stream, continue accumulating
+                                    eprintln!("extproc_mock: received body chunk, size: {} bytes, total: {} bytes",
+                                              body.body.len(), body_buf.len());
                                 }
                             }
                             Some(processing_request::Request::RequestTrailers(_)) => {
@@ -224,8 +239,8 @@ impl ExternalProcessor for ExtProcMock {
                 }
             }
 
-            // In case no headers/body were ever seen, we could still emit a headers response.
-            if !sent_headers_response {
+            // Fallback: if EPP mode and no headers were processed, send headers response
+            if !sent_headers_response && role == "EPP" {
                 let resp = ProcessingResponse {
                     response: Some(processing_response::Response::RequestHeaders(
                         build_headers_response(&epp_upstream, &bbr_model),
