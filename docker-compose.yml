@@ -1,6 +1,5 @@
 
 services:
-  # NGINX with ngx-inference module dynamically loaded
   nginx:
     build:
       context: .
@@ -12,8 +11,8 @@ services:
       - extproc-bbr
       - extproc-epp
       - echo-server
-    # Default bridge network DNS provides service-name resolution at 127.0.0.11
-    # No extra env needed; nginx.conf already uses resolver 127.0.0.11 and service names.
+    volumes:
+      - ./docker/nginx-test.conf:/etc/nginx/nginx.conf:ro
 
   # Mock External Processor for BBR (Body-Based Routing) listening on :9000
   extproc-bbr:
@@ -50,4 +49,9 @@ services:
     # No published port needed; nginx routes internally via service name
 
 # All services share the default network allowing DNS resolution by service name.
-# Access the stack via: curl -i http://localhost:8080/
+# Access the stack via:
+#   Basic test: curl -i http://localhost:8081/
+#   EPP test: curl -i http://localhost:8081/epp-test
+#   BBR test: curl -i http://localhost:8081/bbr-test -H 'Content-Type: application/json' --data '{"model":"claude-4","input": "Why is the sky blue"}'
+#   BBR & EPP test: curl -i http://localhost:8081/responses -H 'Content-Type: application/json' --data '{"model":"claude-4","input": "Why is the sky blue"}'
+#   Health check: curl -i http://localhost:8081/health
