@@ -2,50 +2,37 @@
 services:
   nginx:
     build:
-      context: .
-      dockerfile: docker/ngx-inference.Dockerfile
+      dockerfile: docker/nginx/Dockerfile
     container_name: ngx-inference-nginx
     ports:
       - "8081:80"
     depends_on:
-      - extproc-bbr
-      - extproc-epp
+      - mock-epp
       - echo-server
     volumes:
-      - ./docker/nginx-test.conf:/etc/nginx/nginx.conf:ro
-
-  # Mock External Processor for BBR (Body-Based Routing) listening on :9000
-  extproc-bbr:
-    build:
-      context: .
-      dockerfile: docker/extproc.Dockerfile
-    container_name: extproc-bbr
-    command: ["extproc_mock", "0.0.0.0:9000"]
-    environment:
-      # The mock will emit this upstream in headers so the module can route requests there.
-      - EPP_UPSTREAM=echo-server:80
-      - BBR_MODEL=bbr-chosen-model
-      - MOCK_ROLE=BBR
+      - ./docker/nginx/nginx-test.conf:/etc/nginx/nginx.conf:ro
 
   # Mock External Processor for EPP (Endpoint Picker Processor) listening on :9001
-  extproc-epp:
+  mock-epp:
     build:
       context: .
-      dockerfile: docker/extproc.Dockerfile
+      dockerfile: docker/mock-extproc/Dockerfile
     container_name: extproc-epp
     command: ["extproc_mock", "0.0.0.0:9001"]
     environment:
-      # Same upstream for both mocks: the nginx module will pick what it needs (EPP/BBR).
+      # The EPP upstream for endpoint selection
       - EPP_UPSTREAM=echo-server:80
-      - BBR_MODEL=bbr-chosen-model
       - MOCK_ROLE=EPP
 
   # Simple upstream service the module should route to based on ext-proc header
-  # Using a lightweight echo server so you can see headers/body in the response.
+  # Using a custom echo server that accepts large payloads (50MB limit)
   echo-server:
-    image: ealen/echo-server:latest
+    build:
+      context: docker/echo-server
     container_name: echo-server
-    # Listens on port 80 by default and echoes request details
+    environment:
+      - PORT=80
+    # Custom echo server with 50MB body limit
     # No published port needed; nginx routes internally via service name
 
 # All services share the default network allowing DNS resolution by service name.

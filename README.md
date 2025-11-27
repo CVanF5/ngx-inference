@@ -1,4 +1,4 @@
-ngx-inference: NGINX module for Gateway API Inference Extensions (EPP + BBR)
+ngx-inference: NGINX module for Gateway API Inference Extensions
 =============================================================================
 
 Overview
@@ -7,7 +7,7 @@ This project provides a native NGINX module (built with ngx-rust) that implement
 
 It implements two standard components:
 - **Endpoint Picker Processor (EPP)**: Headers-only exchange following the Gateway API Inference Extension specification to obtain upstream endpoint selection and expose endpoints via the `$inference_upstream` NGINX variable.
-- **Body-Based Routing (BBR)**: Body streaming implementation that extracts model names from JSON request bodies and injects model headers, following the reference BBR implementation from the Gateway API Inference Extension project.
+- **Body-Based Routing (BBR)**: Direct in-module implementation that extracts model names from JSON request bodies and injects model headers, following the OpenAI API specification and Gateway API Inference Extension standards.
 
 Reference docs:
 - NGF design doc: https://github.com/nginx/nginx-gateway-fabric/blob/main/docs/proposals/gateway-inference-extension.md
@@ -16,10 +16,13 @@ Reference docs:
 Current behavior and defaults
 -----------------------------
 - BBR:
-  - Directive `inference_bbr on|off` enables/disables the standard BBR implementation.
-  - Directive `inference_bbr_endpoint` sets the gRPC endpoint for BBR ext-proc server communication (plaintext or `http://host:port`; `https://` not yet supported).
+  - Directive `inference_bbr on|off` enables/disables direct BBR implementation.
+  - BBR follows the Gateway API specification: parses JSON request bodies directly for the "model" field and sets the model header.
   - Directive `inference_bbr_header_name` configures the model header name to inject (default `X-Gateway-Model-Name`).
-  - BBR follows the Gateway API specification: sends `HttpHeaders` with `request_body_mode=STREAMED`, streams complete request body in chunks for JSON model extraction, and returns header mutations with the detected model name from the "model" field.
+  - Directive `inference_bbr_max_body_size` sets maximum body size for BBR processing in bytes (default 10MB).
+  - Directive `inference_bbr_default_model` sets the default model value when no model is found in request body (default `unknown`).
+  - Hybrid memory/file support: small bodies stay in memory, large bodies are read from NGINX temporary files.
+  - Memory allocation is capped at 1MB regardless of body size to prevent excessive memory usage.
 
 - EPP:
   - Directive `inference_epp on|off` enables/disables EPP functionality.
@@ -31,27 +34,12 @@ Current behavior and defaults
 - Fail-open/closed:
   - `inference_bbr_failure_mode_allow on|off` and `inference_epp_failure_mode_allow on|off` control whether to fail-open when the ext-proc is unavailable or errors. Fail-closed returns `502 Bad Gateway`.
 
-Build
------
-Requirements:
-- macOS or Linux with Rust toolchain and protoc (tonic-build uses prost/protobuf).
-- NGINX with dynamic module support (OSS or Plus). Using ngx-rust requires building a cdylib module and loading it via `load_module`.
-
-Steps:
-1. Build the crate and generated protos:
-   - `cargo build --features vendored`
-
-2. Build the cdylib with exported modules (for NGINX `ngx_modules` table):
-   - `cargo build --features "vendored,export-modules"`
-
-3. The resulting dynamic library can be found under `target/debug/` or `target/release/` depending on profile. Name will be platform-dependent (e.g. `libngx_inference.dylib` on macOS, `libngx_inference.so` on Linux).
-
 NGINX configuration
 -------------------
 Example configuration snippet for a location using BBR followed by EPP:
 ```
 # Load the compiled module (path depends on your build output)
-# load_module /opt/nginx/modules/libngx_inference.so;
+load_module /usr/lib/nginx/modules/libngx_inference.so;
 
 http {
     server {
@@ -59,14 +47,14 @@ http {
 
         # OpenAI-like API endpoint with both EPP and BBR
         location /responses {
-            # Configure the inference module for BBR (Body-Based Routing)
+            # Configure the inference module for direct BBR processing
             inference_bbr on;
-            inference_bbr_endpoint "extproc-bbr:9000"; # your EPP/ext-proc host:port
-            inference_bbr_timeout_ms 5000;
+            inference_bbr_max_body_size 52428800; # 50MB for AI workloads
+            inference_bbr_default_model "gpt-3.5-turbo"; # Default model when none found
 
             # Configure the inference module for EPP (Endpoint Picker Processor)
             inference_epp on;
-            inference_epp_endpoint "extproc-epp:9001"; # your BBR/ext-proc host:port
+            inference_epp_endpoint "mock-epp:9001"; # Docker Compose service name (previously container_name extproc-epp)
             inference_epp_timeout_ms 5000;
 
             # Proxy to the chosen upstream (will be determined by EPP)
@@ -85,7 +73,7 @@ Notes and assumptions
 - **Standards Compliance**:
   - Both EPP and BBR implementations follow the Gateway API Inference Extension specification.
   - EPP is compatible with reference EPP servers for endpoint selection.
-  - BBR is compatible with reference BBR servers (kubernetes-sigs/gateway-api-inference-extension/pkg/bbr) for model detection from JSON request bodies.
+  - BBR is compatible with the OpenAI API specification for model detection from JSON request bodies.
 
 - Header names:
   - BBR returns and injects a model header (default `X-Gateway-Model-Name`). You can configure this via `inference_bbr_header_name`.
@@ -94,13 +82,32 @@ Notes and assumptions
 - TLS:
   - Current implementation uses insecure/plaintext gRPC channels. The EPP project notes TLS support is a known issue still under discussion. Once TLS configuration is available, this module can be extended to support secure gRPC channels.
 
-- Body streaming:
+- Body processing:
   - EPP follows the standard Gateway API specification with headers-only mode (no body streaming).
-  - BBR implements the standard STREAMED mode per the Gateway API specification for body-based model detection from JSON. Matches the reference implementation in kubernetes-sigs/gateway-api-inference-extension/pkg/bbr.
+  - BBR implements hybrid memory/file processing: small bodies (< client_body_buffer_size) stay in memory, larger bodies are read from NGINX temporary files.
+  - Memory allocation is capped at 1MB to prevent excessive memory usage regardless of request body size.
+  - BBR respects configurable size limits via `inference_bbr_max_body_size` directive.
 
 - Request headers to ext-proc:
   - EPP implementation forwards incoming request headers per the Gateway API specification for endpoint selection context.
-  - BBR custom implementation sends complete request body for model detection, providing model-based routing beyond the standard specification.
+  - BBR implementation processes request bodies directly for model detection without external communication.
+
+
+Inference Module Architecture
+-------
+```mermaid
+flowchart TD
+  A[Client Request] --> B[NGINX]
+  subgraph NGINX Pod
+    subgraph NGINX Container
+      B --1--> C[Inference Module<br/> with internal BBR]
+    end
+  end
+  C -- 2. gRPC headers --> D[EPP Service<br/>Endpoint Picker]
+  D -- 3. Endpoint Header --> C
+  C -- 4. Model Header --> B
+  B --5--> E[AI Workload Endpoint]
+```
 
 Testing
 -------
@@ -163,7 +170,6 @@ When testing, you should see these headers in the echo server response indicatin
 The Docker Compose stack includes:
 
 - **nginx** (port 8081) - NGINX with ngx-inference module
-- **extproc-bbr** (internal port 9000) - Mock BBR external processor
 - **extproc-epp** (internal port 9001) - Mock EPP external processor
 - **echo-server** (internal port 80) - Target upstream that echoes request details
 
@@ -219,8 +225,9 @@ If you prefer to test without Docker:
 
 Troubleshooting
 ---------------
-- If EPP/BBR endpoints are unreachable or not listening on gRPC, you may see `BAD_GATEWAY` when failure mode allow is off. Toggle `*_failure_mode_allow on` to fail-open during testing.
+- If EPP endpoints are unreachable or not listening on gRPC, you may see `BAD_GATEWAY` when failure mode allow is off. Toggle `*_failure_mode_allow on` to fail-open during testing.
 - Ensure your EPP implementation is configured to return a header mutation for the upstream endpoint. The module will parse response frames and search for `header_mutation` entries.
+- BBR processes JSON directly in the module - ensure request bodies contain valid JSON with a "model" field.
 - Use `error_log` and debug logging to verify module activation. The access-phase handler logs `ngx-inference: bbr_enable=<..> epp_enable=<..>` per request.
 
 Roadmap

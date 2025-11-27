@@ -696,6 +696,7 @@ name = "ngx-inference"
 version = "0.1.0"
 dependencies = [
  "bytes",
+ "libc",
  "ngx",
  "prost",
  "prost-build",

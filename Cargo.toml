@@ -9,6 +9,11 @@ authors = ["NGX Inference Module"]
 name = "ngx_inference"
 crate-type = ["cdylib", "rlib"]
 
+[[bin]]
+name = "extproc_mock"
+path = "bin/extproc_mock.rs"
+required-features = ["extproc-mock"]
+
 [features]
 # When building as a standalone dynamic module outside the nginx build system
 # this feature exports the ngx_modules table.
@@ -16,7 +21,7 @@ export-modules = []
 # Enable vendored nginx sources via ngx crate's feature. Build with:
 #   cargo build --features vendored
 vendored = ["ngx/vendored"]
-extproc-mock = ["serde", "serde_json"]
+extproc-mock = []
 
 [dependencies]
 ngx = "0.5"
@@ -26,8 +31,9 @@ tokio-stream = "0.1"
 tonic = { version = "0.11", features = ["tls", "tls-roots"] }
 prost = "0.12"
 prost-types = "0.12"
-serde = { version = "1.0", features = ["derive"], optional = true }
-serde_json = { version = "1.0", optional = true }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+libc = "0.2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 

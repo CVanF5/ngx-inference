@@ -1,0 +1,24 @@
+# Reduce Docker build contexts for services using repository root as context
+# Rust build artifacts
+/target
+**/target
+
+# VCS metadata
+/.git
+/.gitignore
+/.github
+
+# Local editor configs/cache
+*.swp
+*.log
+/.vscode
+
+# macOS metadata
+.DS_Store
+
+# Tests (not needed for container images)
+/tests
+
+# Ignore cargo incremental build cache if present
+/target/debug
+/target/release/.fingerprint

@@ -6,7 +6,7 @@ use ngx::ffi::{
     ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, ngx_module_t, ngx_str_t, ngx_uint_t,
     NGX_CONF_TAKE1, NGX_HTTP_MAIN_CONF, NGX_HTTP_SRV_CONF, NGX_HTTP_LOC_CONF, NGX_HTTP_LOC_CONF_OFFSET, NGX_HTTP_MODULE, NGX_LOG_EMERG,
 };
-use ngx::http::{self, HttpModule, MergeConfigError};
+use ngx::http::{self, HttpModule};
 use ngx::http::{HttpModuleLocationConf, HttpModuleMainConf, NgxHttpCoreModule};
 use ngx::{
     http_request_handler, http_variable_get, ngx_conf_log_error, ngx_log_debug_http, ngx_string,
@@ -15,35 +15,21 @@ use ngx::{
 /* Internal modules for gRPC ext-proc client and generated protos */
 pub mod protos;
 pub mod grpc;
+pub mod model_extractor;
+pub mod modules;
 
-/// Helper to get an incoming request header value by name (case-insensitive).
-fn get_header_in<'a>(request: &'a http::Request, key: &str) -> Option<&'a str> {
-    for (name, value) in request.headers_in_iterator() {
-        if let Ok(name_utf8) = name.to_str() {
-            if name_utf8.eq_ignore_ascii_case(key) {
-                if let Ok(val_utf8) = value.to_str() {
-                    return Some(val_utf8);
-                } else {
-                    // Non-UTF8 value: skip (headers we need are ASCII)
-                    return None;
-                }
-            }
-        }
-    }
-    None
-}
+use modules::{ModuleConfig, BbrProcessor, EppProcessor};
+use modules::bbr::get_header_in;
+use modules::config::{set_on_off, set_string_opt, set_usize, set_u64};
 
-// Inference module for Gateway API inference extensions.
+// NGINX module for Gateway API inference extensions.
 // Pipeline (request path):
-//   1) Optional BBR (Body-Based Routing): Standard extension that streams request body to
-//      remote ext-proc server to detect model name from JSON and set header X-Gateway-Model-Name.
-//      Follows the reference BBR implementation in the Gateway API Inference Extension.
-//   2) Standard EPP (Endpoint Picker Processor): Follows the reference specification to
-//      send request context to remote ext-proc, receive upstream endpoint, and set header
-//      X-Inference-Upstream per the Gateway API Inference Extension protocol.
+//   1) Optional BBR (Body-Based Routing): Parses JSON request bodies to detect model names
+//      and sets X-Gateway-Model-Name header following Gateway API Inference Extension spec.
+//   2) Optional EPP (Endpoint Picker Processor): Sends request context to remote ext-proc,
+//      receives upstream endpoint, and sets X-Inference-Upstream header per Gateway API spec.
 //
-// Note: Both EPP and BBR implementations follow the Gateway API Inference Extension
-// specification and reference implementations.
+// Both BBR and EPP follow the Gateway API Inference Extension specification.
 
 struct Module;
 
@@ -87,128 +73,13 @@ impl http::HttpModule for Module {
     }
 }
 
-#[derive(Debug, Default, Clone)]
-struct ModuleConfig {
-    // BBR (Body-Based Routing)
-    bbr_enable: bool,
-    bbr_endpoint: Option<String>, // host:port (plaintext) or scheme://host:port
-    bbr_chunk_size: usize,        // 1KB-64KB range (1024-65536 bytes)
-    bbr_timeout_ms: u64,
-    bbr_failure_mode_allow: bool, // fail-open if ext-proc unavailable
-    bbr_header_name: String,      // default "X-Gateway-Model-Name"
 
-    // EPP (Endpoint Picker Processor)
-    epp_enable: bool,
-    epp_endpoint: Option<String>, // host:port
-    epp_timeout_ms: u64,
-    epp_failure_mode_allow: bool, // fail-open
-    epp_header_name: String,      // default "X-Inference-Upstream"
-
-    // Reserved: limits
-    max_body_size_bytes: Option<usize>,
-}
 
 unsafe impl HttpModuleLocationConf for Module {
     type LocationConf = ModuleConfig;
 }
 
-impl http::Merge for ModuleConfig {
-    fn merge(&mut self, prev: &ModuleConfig) -> Result<(), MergeConfigError> {
-        // Inherit enable flags
-        if prev.bbr_enable {
-            self.bbr_enable = true;
-        }
-        if prev.epp_enable {
-            self.epp_enable = true;
-        }
-
-        // Inherit string options if not set
-        if self.bbr_endpoint.is_none() {
-            self.bbr_endpoint = prev.bbr_endpoint.clone();
-        }
-        if self.epp_endpoint.is_none() {
-            self.epp_endpoint = prev.epp_endpoint.clone();
-        }
-
-        // Inherit numeric with defaults
-        if self.bbr_chunk_size == 0 {
-            self.bbr_chunk_size = if prev.bbr_chunk_size == 0 { 64 * 1024 } else { prev.bbr_chunk_size };
-        }
-        if self.bbr_timeout_ms == 0 {
-            self.bbr_timeout_ms = if prev.bbr_timeout_ms == 0 { 200 } else { prev.bbr_timeout_ms };
-        }
-        if self.epp_timeout_ms == 0 {
-            self.epp_timeout_ms = if prev.epp_timeout_ms == 0 { 200 } else { prev.epp_timeout_ms };
-        }
-        if self.bbr_header_name.is_empty() {
-            self.bbr_header_name = if prev.bbr_header_name.is_empty() {
-                "X-Gateway-Model-Name".to_string()
-            } else {
-                prev.bbr_header_name.clone()
-            }
-        }
-        if self.epp_header_name.is_empty() {
-            self.epp_header_name = if prev.epp_header_name.is_empty() {
-                "X-Inference-Upstream".to_string()
-            } else {
-                prev.epp_header_name.clone()
-            }
-        }
-
-        // Inherit bools
-        if prev.bbr_failure_mode_allow {
-            self.bbr_failure_mode_allow = true;
-        }
-        if prev.epp_failure_mode_allow {
-            self.epp_failure_mode_allow = true;
-        }
-
-        // Inherit limits
-        if self.max_body_size_bytes.is_none() {
-            self.max_body_size_bytes = prev.max_body_size_bytes;
-        }
-
-        Ok(())
-    }
-}
-
 // -------------------- Directives --------------------
-
-fn set_on_off(val: &str) -> Option<bool> {
-    if val.eq_ignore_ascii_case("on") {
-        Some(true)
-    } else if val.eq_ignore_ascii_case("off") {
-        Some(false)
-    } else {
-        None
-    }
-}
-
-fn set_string_opt(target: &mut Option<String>, val: &str) {
-    if !val.is_empty() {
-        *target = Some(val.to_string());
-    }
-}
-
-fn set_usize(target: &mut usize, val: &str) -> Result<(), ()> {
-    match val.parse::<usize>() {
-        Ok(n) => {
-            *target = n;
-            Ok(())
-        }
-        Err(_) => Err(()),
-    }
-}
-
-fn set_u64(target: &mut u64, val: &str) -> Result<(), ()> {
-    match val.parse::<u64>() {
-        Ok(n) => {
-            *target = n;
-            Ok(())
-        }
-        Err(_) => Err(()),
-    }
-}
 
 // inference_bbr on|off
 extern "C" fn ngx_http_inference_set_bbr_enable(
@@ -234,90 +105,6 @@ extern "C" fn ngx_http_inference_set_bbr_enable(
                 ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr` expects on|off");
                 return core::NGX_CONF_ERROR;
             }
-        }
-    }
-    core::NGX_CONF_OK
-}
-
-// inference_bbr_endpoint host:port
-extern "C" fn ngx_http_inference_set_bbr_endpoint(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
-
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_endpoint` not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        set_string_opt(&mut conf.bbr_endpoint, val);
-    }
-    core::NGX_CONF_OK
-}
-
-// inference_bbr_chunk_size N (1024-65536 bytes, for streaming body chunks to BBR server)
-extern "C" fn ngx_http_inference_set_bbr_chunk_size(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
-
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_chunk_size` not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        match set_usize(&mut conf.bbr_chunk_size, val) {
-            Ok(()) => {
-                // Validate chunk size is within reasonable bounds (1KB to 64KB)
-                if conf.bbr_chunk_size < 1024 || conf.bbr_chunk_size > 65536 {
-                    ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_chunk_size` must be between 1024 and 65536 bytes");
-                    return core::NGX_CONF_ERROR;
-                }
-            }
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_chunk_size` must be usize");
-                return core::NGX_CONF_ERROR;
-            }
-        }
-    }
-    core::NGX_CONF_OK
-}
-
-// inference_bbr_timeout_ms N (gRPC timeout for BBR server communication, default 200ms)
-extern "C" fn ngx_http_inference_set_bbr_timeout_ms(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
-
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_timeout_ms` not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        if set_u64(&mut conf.bbr_timeout_ms, val).is_err() {
-            ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_timeout_ms` must be u64");
-            return core::NGX_CONF_ERROR;
         }
     }
     core::NGX_CONF_OK
@@ -352,6 +139,32 @@ extern "C" fn ngx_http_inference_set_bbr_failure_mode_allow(
     core::NGX_CONF_OK
 }
 
+// inference_bbr_max_body_size N (maximum body size in bytes for BBR processing, default 10MB)
+extern "C" fn ngx_http_inference_set_bbr_max_body_size(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+
+        let val = match args[1].to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_max_body_size` not utf-8");
+                return core::NGX_CONF_ERROR;
+            }
+        };
+
+        if set_usize(&mut conf.bbr_max_body_size, val).is_err() {
+            ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_max_body_size` must be usize");
+            return core::NGX_CONF_ERROR;
+        }
+    }
+    core::NGX_CONF_OK
+}
+
 // inference_bbr_header_name NAME
 extern "C" fn ngx_http_inference_set_bbr_header_name(
     cf: *mut ngx_conf_t,
@@ -371,6 +184,28 @@ extern "C" fn ngx_http_inference_set_bbr_header_name(
         };
 
         conf.bbr_header_name = val.to_string();
+    }
+    core::NGX_CONF_OK
+}
+
+// inference_bbr_default_model MODEL_NAME
+extern "C" fn ngx_http_inference_set_bbr_default_model(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+
+        let val = match args[1].to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_default_model` not utf-8");
+                return core::NGX_CONF_ERROR;
+            }
+        };
+        conf.bbr_default_model = val.to_string();
     }
     core::NGX_CONF_OK
 }
@@ -506,7 +341,7 @@ extern "C" fn ngx_http_inference_set_epp_header_name(
 }
 
 // NGINX directives table
-static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 12] = [
+static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     ngx_command_t {
         name: ngx_string!("inference_bbr"),
         type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
@@ -516,25 +351,9 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 12] = [
         post: std::ptr::null_mut(),
     },
     ngx_command_t {
-        name: ngx_string!("inference_bbr_endpoint"),
+        name: ngx_string!("inference_bbr_max_body_size"),
         type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
-        set: Some(ngx_http_inference_set_bbr_endpoint),
-        conf: NGX_HTTP_LOC_CONF_OFFSET,
-        offset: 0,
-        post: std::ptr::null_mut(),
-    },
-    ngx_command_t {
-        name: ngx_string!("inference_bbr_chunk_size"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
-        set: Some(ngx_http_inference_set_bbr_chunk_size),
-        conf: NGX_HTTP_LOC_CONF_OFFSET,
-        offset: 0,
-        post: std::ptr::null_mut(),
-    },
-    ngx_command_t {
-        name: ngx_string!("inference_bbr_timeout_ms"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
-        set: Some(ngx_http_inference_set_bbr_timeout_ms),
+        set: Some(ngx_http_inference_set_bbr_max_body_size),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -551,6 +370,14 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 12] = [
         name: ngx_string!("inference_bbr_header_name"),
         type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
         set: Some(ngx_http_inference_set_bbr_header_name),
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("inference_bbr_default_model"),
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        set: Some(ngx_http_inference_set_bbr_default_model),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -686,68 +513,54 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
     let conf = match Module::location_conf(request) {
         Some(c) => c,
         None => {
-            ngx_log_debug_http!(request, "ngx-inference: module config missing");
+            // Use error level for missing config since it's a setup issue
+            unsafe {
+                let msg = b"ngx-inference: module config missing\0";
+                ngx::ffi::ngx_log_error_core(
+                    ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
+                    (*request.as_mut()).connection.as_ref().unwrap().log,
+                    0,
+                    msg.as_ptr(),
+                );
+            }
             return core::Status::NGX_DECLINED;
         }
     };
 
-    ngx_log_debug_http!(
-        request,
-        "ngx-inference: bbr_enable={} epp_enable={}",
-        conf.bbr_enable,
-        conf.epp_enable
-    );
+    // No routine logging - only log errors and warnings
 
-    // Stage 1: BBR (Body-Based Routing) - stream request body to ext-proc for JSON model detection
+    // Stage 1: BBR (Body-Based Routing)
     if conf.bbr_enable {
-        // Check if request method and headers suggest a body might be present
-        let method_str = request.method().to_string();
-        let has_body = method_str == "POST"
-            || method_str == "PUT"
-            || method_str == "PATCH"
-            || get_header_in(request, "Content-Length").map_or(false, |cl| cl != "0")
-            || get_header_in(request, "Transfer-Encoding").map_or(false, |te| te.contains("chunked"));
-        if has_body {
-            ngx_log_debug_http!(request, "ngx-inference: BBR processing for method {} with body", method_str);
-            // Initiate asynchronous reading of the client request body.
-            unsafe {
-                // If header already present, skip BBR.
-                let header_name = if conf.bbr_header_name.is_empty() { "X-Gateway-Model-Name".to_string() } else { conf.bbr_header_name.clone() };
-                if let Some(_existing) = get_header_in(request, &header_name) {
-                    // Already set, skip BBR stage.
-                } else {
-                    let r_ptr: *mut ngx::ffi::ngx_http_request_t = request.as_mut();
-                    if r_ptr.is_null() {
-                        ngx_log_debug_http!(request, "ngx-inference: null request pointer in BBR");
-                        if !conf.bbr_failure_mode_allow {
-                            return http::HTTPStatus::BAD_GATEWAY.into();
-                        }
-                    } else {
-                        let rc = ngx::ffi::ngx_http_read_client_request_body(r_ptr, Some(bbr_body_read_handler));
-                        if rc == core::Status::NGX_AGAIN.into() {
-                            // Body will be read asynchronously; resume processing in the handler.
-                            return core::Status::NGX_DONE;
-                        } else if rc == core::Status::NGX_OK.into() {
-                            // Body has been read synchronously; run handler immediately.
-                            bbr_body_read_handler(r_ptr);
-                        } else {
-                            ngx_log_debug_http!(request, "ngx-inference: BBR read_body rc={}", rc);
-                            if !conf.bbr_failure_mode_allow {
-                                // Fail closed: reject request
-                                return http::HTTPStatus::BAD_GATEWAY.into();
-                            }
-                        }
-                    }
+        let bbr_status = BbrProcessor::process_request(request, conf);
+        match bbr_status {
+            core::Status::NGX_DONE => {
+                // Body reading started, handler will be called later
+                return core::Status::NGX_DONE;
+            }
+            core::Status::NGX_OK => {
+                // Check if request was finalized (e.g., 413 error)
+                let response_status = unsafe { (*request.as_mut()).headers_out.status };
+                if response_status == ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t {
+                    // Request was finalized with 413, don't continue processing
+                    return core::Status::NGX_OK;
+                }
+                // Otherwise continue processing
+            }
+            core::Status::NGX_ERROR => {
+                // Other error - check failure mode
+                if !conf.bbr_failure_mode_allow {
+                    return http::HTTPStatus::BAD_GATEWAY.into();
                 }
             }
-        } else {
-            ngx_log_debug_http!(request, "ngx-inference: BBR enabled but no body detected for method {}, skipping", method_str);
+            _ => {
+                // Continue processing
+            }
         }
     }
 
     // Stage 2: EPP (Endpoint Picker Processor) - headers-only exchange for upstream selection
     if conf.epp_enable {
-        match epp_pick_upstream(request, conf) {
+        match EppProcessor::process_request(request, conf) {
             Ok(()) => {
                 // upstream header set
             }
@@ -755,6 +568,15 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
                 ngx_log_debug_http!(request, "ngx-inference: EPP error: {}", err);
                 if !conf.epp_failure_mode_allow {
                     // Fail closed
+                    unsafe {
+                        let r_ptr: *mut ngx::ffi::ngx_http_request_t = request.as_mut();
+                        ngx::ffi::ngx_log_error_core(
+                            ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
+                            (*(*r_ptr).connection).log,
+                            0,
+                            b"ngx-inference: EPP rejected request with HTTP 502 - external processor error\0".as_ptr(),
+                        );
+                    }
                     return http::HTTPStatus::BAD_GATEWAY.into();
                 }
             }
@@ -765,147 +587,6 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
     core::Status::NGX_DECLINED
 });
 
- // -------------------- Core Pipeline Implementation --------------------
 
-// Body read handler: called after ngx_http_read_client_request_body finishes reading.
-extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_request_t) {
-    unsafe {
-        // Validate input pointer
-        if r.is_null() {
-            return;
-        }
-        // Reconstruct Rust wrapper and config
-        let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
-        let conf = match Module::location_conf(request) {
-            Some(c) => c,
-            None => {
-                // No config found, resume processing
-                ngx::ffi::ngx_http_core_run_phases(r);
-                return;
-            }
-        };
 
-        // Validate endpoint
-        let endpoint = match &conf.bbr_endpoint {
-            Some(e) if !e.is_empty() => e.clone(),
-            _ => {
-                // No endpoint configured; resume normal processing
-                ngx::ffi::ngx_http_core_run_phases(r);
-                return;
-            }
-        };
-
-        // Header name to set
-        let header_name = if conf.bbr_header_name.is_empty() {
-            "X-Gateway-Model-Name".to_string()
-        } else {
-            conf.bbr_header_name.clone()
-        };
-
-        // If header already present, skip BBR and resume.
-        if let Some(_existing) = get_header_in(request, &header_name) {
-            ngx::ffi::ngx_http_core_run_phases(r);
-            return;
-        }
-
-        // Collect in-memory request body buffers into a contiguous Vec<u8>.
-        // Pre-allocate based on Content-Length if available for better performance.
-        // Note: For large bodies NGINX may spill to temp files; this implementation
-        // handles in-memory buffers and can be extended to read file-backed buffers.
-        let content_length = get_header_in(request, "Content-Length")
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(0);
-        let mut body: Vec<u8> = Vec::with_capacity(content_length);
-
-        let rb = (*r).request_body;
-        if !rb.is_null() {
-            let mut cl = (*rb).bufs;
-            while !cl.is_null() {
-                let buf = (*cl).buf;
-                if buf.is_null() {
-                    cl = (*cl).next;
-                    continue;
-                }
-                let pos = (*buf).pos;
-                let last = (*buf).last;
-                if !pos.is_null() && !last.is_null() && last >= pos {
-                    let len = last.offset_from(pos);
-                    if len > 0 && len < (1024 * 1024) { // Sanity check: max 1MB per buffer
-                        let len = len as usize;
-                        let slice = std::slice::from_raw_parts(pos as *const u8, len);
-                        body.extend_from_slice(slice);
-                    }
-                }
-                // TODO: handle file-backed buffers (buf->file != NULL) by reading ranges [file_pos, file_last].
-                cl = (*cl).next;
-            }
-        }
-
-        // Stream body to ext-proc and read returned header.
-        match crate::grpc::bbr_stream_blocking_with_body(
-            endpoint.as_str(),
-            &body,
-            conf.bbr_chunk_size,
-            &header_name,
-            conf.bbr_timeout_ms,
-        ) {
-            Ok(Some(val)) => {
-                let _ = request.add_header_in(&header_name, &val);
-            }
-            Ok(None) => {
-                // no header returned; proceed
-            }
-            Err(err) => {
-                // Log error; if fail-closed desired, we would have to finalize with BAD_GATEWAY here.
-                ngx_log_debug_http!(request, "ngx-inference: BBR gRPC error in handler: {}", err);
-                if !conf.bbr_failure_mode_allow {
-                    // Fail closed: set 502 and finalize
-                    request.set_status(http::HTTPStatus::BAD_GATEWAY);
-                    ngx::ffi::ngx_http_finalize_request(r, ngx::ffi::NGX_HTTP_BAD_GATEWAY as ngx::ffi::ngx_int_t);
-                    return;
-                }
-            }
-        }
-
-        // Resume normal HTTP processing phases after asynchronous operation.
-        ngx::ffi::ngx_http_core_run_phases(r);
-    }
-}
-
-fn epp_pick_upstream(request: &mut http::Request, conf: &ModuleConfig) -> Result<(), &'static str> {
-    // If EPP endpoint is not configured, skip.
-    let endpoint = match &conf.epp_endpoint {
-        Some(e) if !e.is_empty() => e.as_str(),
-        _ => return Ok(()),
-    };
-
-    let upstream_header = if conf.epp_header_name.is_empty() { "X-Inference-Upstream".to_string() } else { conf.epp_header_name.clone() };
-    let upstream_header_str = upstream_header.as_str();
-
-    // If upstream already set (e.g., previous stage), skip.
-    if get_header_in(request, upstream_header_str).is_some() {
-        return Ok(());
-    }
-
-    // Call gRPC client: forward incoming headers to EPP for richer context; headers-only request to pick upstream.
-    let mut hdrs: Vec<(String, String)> = Vec::new();
-    for (name, value) in request.headers_in_iterator() {
-        if let (Ok(n), Ok(v)) = (name.to_str(), value.to_str()) {
-            hdrs.push((n.to_string(), v.to_string()));
-        }
-    }
-    match crate::grpc::epp_headers_blocking(endpoint, conf.epp_timeout_ms, upstream_header_str, hdrs) {
-        Ok(Some(val)) => {
-            // Write upstream selection header for variable consumption.
-            let _ = request.add_header_in(upstream_header_str, &val);
-        }
-        Ok(None) => {
-            // No upstream provided
-        }
-        Err(_err) => {
-            return Err("epp grpc error");
-        }
-    }
-
-    Ok(())
-}
+// Module configuration and command definitions...
