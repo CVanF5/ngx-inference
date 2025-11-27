@@ -57,23 +57,23 @@ http {
     server {
         listen 8080;
 
-        location /inference {
-            # Body-Based Routing: request body streamed to BBR/ext-proc; returned model header added to request
+        # OpenAI-like API endpoint with both EPP and BBR
+        location /responses {
+            # Configure the inference module for BBR (Body-Based Routing)
             inference_bbr on;
-            inference_bbr_endpoint 127.0.0.1:50051;     # your BBR/ext-proc host:port
-            inference_bbr_chunk_size 65536;              # recommended <= 64KiB
-            inference_bbr_timeout_ms 200;
-            inference_bbr_failure_mode_allow on;         # fail-open preferred per alpha stage
-            inference_bbr_header_name X-Gateway-Model-Name;
+            inference_bbr_endpoint "extproc-bbr:9000"; # your EPP/ext-proc host:port
+            inference_bbr_timeout_ms 5000;
 
-            # Endpoint Picker Processor: headers-only exchange to get upstream endpoint hint
+            # Configure the inference module for EPP (Endpoint Picker Processor)
             inference_epp on;
-            inference_epp_endpoint 127.0.0.1:50052;      # your EPP/ext-proc host:port
-            inference_epp_header_name X-Inference-Upstream;  # upstream header name (default)
-            inference_epp_timeout_ms 200;
-            inference_epp_failure_mode_allow off;        # fail-closed
+            inference_epp_endpoint "extproc-epp:9001"; # your BBR/ext-proc host:port
+            inference_epp_timeout_ms 5000;
 
-            # Use the upstream value returned by EPP
+            # Proxy to the chosen upstream (will be determined by EPP)
+            # Use the $inference_upstream variable set by the EPP module
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
             proxy_pass http://$inference_upstream;
         }
     }
@@ -120,7 +120,7 @@ The project includes a complete testing environment with Docker Compose that set
 2. **Test EPP (Endpoint Picker Processor):**
    ```bash
    # Headers-only request - EPP selects upstream based on headers
-   curl -i http://localhost:8081/ \
+   curl -i http://localhost:8081/epp-test \
      -H "Content-Type: application/json" \
      -H "X-Request-Id: test-epp-123"
    ```
@@ -128,7 +128,7 @@ The project includes a complete testing environment with Docker Compose that set
 3. **Test BBR (Body-Based Routing) with JSON model detection:**
    ```bash
    # Request with JSON body - BBR extracts model name from "model" field
-   curl -i http://localhost:8081/ \
+   curl -i http://localhost:8081/bbr-test \
      -H "Content-Type: application/json" \
      -d '{"model": "gpt-4", "prompt": "Hello world", "temperature": 0.7}'
    ```
@@ -136,7 +136,7 @@ The project includes a complete testing environment with Docker Compose that set
 4. **Test BBR with fallback model:**
    ```bash
    # JSON without "model" field - BBR uses configured fallback
-   curl -i http://localhost:8081/ \
+   curl -i http://localhost:8081/bbr-test \
      -H "Content-Type: application/json" \
      -d '{"prompt": "Hello world", "temperature": 0.7}'
    ```
@@ -144,7 +144,7 @@ The project includes a complete testing environment with Docker Compose that set
 5. **Test combined BBR + EPP pipeline:**
    ```bash
    # JSON with model field - both BBR and EPP process the request
-   curl -i http://localhost:8081/ \
+   curl -i http://localhost:8081/responses \
      -H "Content-Type: application/json" \
      -H "X-Client-Id: mobile-app" \
      -d '{"model": "claude-3", "messages": [{"role": "user", "content": "Hello"}]}'
