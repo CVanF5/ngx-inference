@@ -13,7 +13,7 @@ fn main() {
     }
 
     // Configure tonic/prost codegen
-    let mut cfg = tonic_build::configure()
+    let mut cfg = tonic_prost_build::configure()
         // Generate clients and servers for the ext-proc mock server
         .build_client(true)
         .build_server(true)
@@ -24,7 +24,7 @@ fn main() {
     cfg = cfg.extern_path(".google.protobuf", "prost_types");
 
     // Compile the required Envoy ext-proc protos and minimal dependencies from our local vendor dir
-    cfg.compile(
+    cfg.compile_protos(
         &[
             "proto/envoy/service/ext_proc/v3/external_processor.proto",
             "proto/envoy/extensions/filters/http/ext_proc/v3/processing_mode.proto",
