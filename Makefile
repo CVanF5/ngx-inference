@@ -111,8 +111,11 @@ setup-docker:
 stop:
 	docker compose -f $(DOCKER_COMPOSE_MAIN) down --remove-orphans
 	# Stop local processes
+ifndef GITHUB_ACTIONS
 	pkill -f "custom-echo-server.js" 2>/dev/null || true
 	pkill -f "extproc_mock" 2>/dev/null || true
+endif
+
 
 # Testing targets
 test:
