@@ -12,6 +12,8 @@ It implements two standard components:
 Reference docs:
 - NGF design doc: https://github.com/nginx/nginx-gateway-fabric/blob/main/docs/proposals/gateway-inference-extension.md
 - EPP reference implementation: https://github.com/kubernetes-sigs/gateway-api-inference-extension/tree/main/pkg/epp
+- Module configuration: [docs/configuration.md](docs/configuration.md)
+- Example configurations: [docs/examples/README.md](docs/examples/README.md)
 
 Current behavior and defaults
 -----------------------------
@@ -22,23 +24,26 @@ Current behavior and defaults
   - Directive `inference_bbr_max_body_size` sets maximum body size for BBR processing in bytes (default 10MB).
   - Directive `inference_bbr_default_model` sets the default model value when no model is found in request body (default `unknown`).
   - Hybrid memory/file support: small bodies stay in memory, large bodies are read from NGINX temporary files.
-  - Memory allocation is capped at 1MB regardless of body size to prevent excessive memory usage.
+  - Memory allocation pre-allocation is capped at 1MB to avoid large upfront allocations. Actual in-memory accumulation may grow up to the configured `inference_bbr_max_body_size` limit; large payloads spill to disk and are read incrementally.
 
 - EPP:
   - Directive `inference_epp on|off` enables/disables EPP functionality.
   - Directive `inference_epp_endpoint` sets the gRPC endpoint for standard EPP ext-proc server communication.
   - Directive `inference_epp_header_name` configures the upstream header name to read from EPP responses (default `X-Inference-Upstream`).
+  - Directive `inference_epp_timeout_ms` sets the gRPC timeout for EPP communication (default `200ms`).
   - EPP follows the Gateway API Inference Extension specification: performs headers-only exchange, reads header mutations from responses, and sets the upstream header for endpoint selection.
-  - The `$inference_upstream` NGINX variable exposes the EPP-selected endpoint and can be used in `proxy_pass` directives.
+  - The `$inference_upstream` NGINX variable exposes the EPP-selected endpoint (read from the header configured by `inference_epp_header_name`) and can be used in `proxy_pass` directives.
 
 - Fail-open/closed:
-  - `inference_bbr_failure_mode_allow on|off` and `inference_epp_failure_mode_allow on|off` control whether to fail-open when the ext-proc is unavailable or errors. Fail-closed returns `502 Bad Gateway`.
+  - `inference_bbr_failure_mode_allow on|off` and `inference_epp_failure_mode_allow on|off` control fail-open vs fail-closed behavior.
+  - In fail-closed mode, BBR enforces size limits and may return `413 Request Entity Too Large` or `500 Internal Server Error` on processing errors; EPP failures return `502 Bad Gateway`.
+  - In fail-open mode, processing continues without terminating the request.
 
 NGINX configuration
 -------------------
 Example configuration snippet for a location using BBR followed by EPP:
-```
-# Load the compiled module (path depends on your build output)
+```nginx
+# Load the compiled module (Linux: .so path; macOS local build: .dylib)
 load_module /usr/lib/nginx/modules/libngx_inference.so;
 
 http {
@@ -85,7 +90,7 @@ Notes and assumptions
 - Body processing:
   - EPP follows the standard Gateway API specification with headers-only mode (no body streaming).
   - BBR implements hybrid memory/file processing: small bodies (< client_body_buffer_size) stay in memory, larger bodies are read from NGINX temporary files.
-  - Memory allocation is capped at 1MB to prevent excessive memory usage regardless of request body size.
+  - Memory allocation pre-allocation is capped at 1MB to avoid large upfront allocations. Actual in-memory accumulation may grow up to the configured `inference_bbr_max_body_size` limit; large payloads spill to disk and are read incrementally.
   - BBR respects configurable size limits via `inference_bbr_max_body_size` directive.
 
 - Request headers to ext-proc:
@@ -129,7 +134,8 @@ For local development and testing without Docker:
 
 2. **Start local services and run tests:**
    ```bash
-   # Start local nginx with the compiled module plus mock services
+   # Start local mock services (echo server on :8080 and mock ext-proc on :9001).
+   # NGINX is started automatically by 'make test-local'.
    make start-local
 
    # Run configuration tests locally
@@ -141,13 +147,13 @@ Troubleshooting
 - If EPP endpoints are unreachable or not listening on gRPC, you may see `BAD_GATEWAY` when failure mode allow is off. Toggle `*_failure_mode_allow on` to fail-open during testing.
 - Ensure your EPP implementation is configured to return a header mutation for the upstream endpoint. The module will parse response frames and search for `header_mutation` entries.
 - BBR processes JSON directly in the module - ensure request bodies contain valid JSON with a "model" field.
-- Use `error_log` and debug logging to verify module activation. The access-phase handler logs `ngx-inference: bbr_enable=<..> epp_enable=<..>` per request.
+- Use `error_log` and debug logging to verify module activation. BBR logs body reading and size limit enforcement; EPP logs gRPC errors. Set `error_log` to `debug` to observe processing details.
 
 Roadmap
 -------
 - Validate EPP and BBR implementations against Gateway API Inference Extension conformance tests.
 - Align exact header names and semantics to the upstream specification and reference implementations.
-- Add configurable maximum body size and back-pressure handling for BBR.
+- Validate large body handling and back-pressure for BBR; refine chunked reads/writes and resource usage for very large payloads.
 - TLS support for gRPC once available in the Gateway API specification.
 - Connection pooling and caching for improved performance at scale.
 
