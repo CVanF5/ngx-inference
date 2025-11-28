@@ -525,8 +525,8 @@ if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
 
     # Display Docker log information
     echo -e "${YELLOW}📋 Docker Log Locations for troubleshooting:${NC}"
-    echo -e "  ${BLUE}Nginx Logs:${NC}      Use 'docker compose logs nginx' to view nginx logs"
-    echo -e "  ${BLUE}All Services:${NC}    Use 'docker compose logs' to view all container logs"
+    echo -e "  ${BLUE}Nginx Logs:${NC}      Use 'docker compose -f tests/docker-compose.yml logs nginx' to view nginx logs"
+    echo -e "  ${BLUE}All Services:${NC}    Use 'docker compose -f tests/docker-compose.yml logs' to view all container logs"
     echo ""
 
     echo -e "${GREEN}🎉 All Docker tests passed! 🎉${NC}"
@@ -612,14 +612,9 @@ echo ""
 
 # Display nginx log locations for troubleshooting:
 echo -e "${YELLOW}📋 Nginx Log Locations for troubleshooting:${NC}"
-if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
-    echo -e "  ${BLUE}Docker Environment:${NC} Use 'docker compose -f tests/docker-compose.yml logs nginx' to view nginx logs"
-    echo -e "  ${BLUE}All Services:${NC}       Use 'docker compose -f tests/docker-compose.ymllogs' to view all container logs"
-else
-    echo -e "  ${BLUE}Access Log:${NC}  /tmp/nginx-ngx-inference-access.log"
-    echo -e "  ${BLUE}Error Log:${NC}   /tmp/nginx-ngx-inference-error.log"
-    echo -e "  ${BLUE}Debug Log:${NC}   /tmp/nginx-ngx-inference-debug.log"
-fi
+echo -e "  ${BLUE}Access Log:${NC}  /tmp/nginx-ngx-inference-access.log"
+echo -e "  ${BLUE}Error Log:${NC}   /tmp/nginx-ngx-inference-error.log"
+echo -e "  ${BLUE}Debug Log:${NC}   /tmp/nginx-ngx-inference-debug.log"
 echo ""
 
 if [[ $all_passed -eq 1 ]]; then
