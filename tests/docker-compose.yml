@@ -3,6 +3,7 @@ services:
   nginx:
     build:
       dockerfile: docker/nginx/Dockerfile
+      context: ..
     container_name: ngx-inference-nginx
     ports:
       - "8081:80"
@@ -10,12 +11,12 @@ services:
       - mock-epp
       - echo-server
     volumes:
-      - ./docker/nginx/nginx-test.conf:/etc/nginx/nginx.conf:ro
+      - ../docker/nginx/nginx-test.conf:/etc/nginx/nginx.conf:ro
 
   # Mock External Processor for EPP (Endpoint Picker Processor) listening on :9001
   mock-epp:
     build:
-      context: .
+      context: ..
       dockerfile: docker/mock-extproc/Dockerfile
     container_name: extproc-epp
     command: ["extproc_mock", "0.0.0.0:9001"]
@@ -28,7 +29,7 @@ services:
   # Using a custom echo server that accepts large payloads (50MB limit)
   echo-server:
     build:
-      context: docker/echo-server
+      context: ../docker/echo-server
     container_name: echo-server
     environment:
       - PORT=80

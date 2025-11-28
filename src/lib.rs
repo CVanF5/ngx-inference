@@ -2,9 +2,10 @@ use std::ffi::{c_char, c_void};
 
 use ngx::core;
 use ngx::ffi::{
-    ngx_array_push, ngx_command_t, ngx_conf_t, ngx_http_add_variable, ngx_http_handler_pt, ngx_http_module_t,
-    ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, ngx_module_t, ngx_str_t, ngx_uint_t,
-    NGX_CONF_TAKE1, NGX_HTTP_MAIN_CONF, NGX_HTTP_SRV_CONF, NGX_HTTP_LOC_CONF, NGX_HTTP_LOC_CONF_OFFSET, NGX_HTTP_MODULE, NGX_LOG_EMERG,
+    ngx_array_push, ngx_command_t, ngx_conf_t, ngx_http_add_variable, ngx_http_handler_pt,
+    ngx_http_module_t, ngx_http_phases_NGX_HTTP_ACCESS_PHASE, ngx_int_t, ngx_module_t, ngx_str_t,
+    ngx_uint_t, NGX_CONF_TAKE1, NGX_HTTP_LOC_CONF, NGX_HTTP_LOC_CONF_OFFSET, NGX_HTTP_MAIN_CONF,
+    NGX_HTTP_MODULE, NGX_HTTP_SRV_CONF, NGX_LOG_EMERG,
 };
 use ngx::http::{self, HttpModule};
 use ngx::http::{HttpModuleLocationConf, HttpModuleMainConf, NgxHttpCoreModule};
@@ -13,14 +14,28 @@ use ngx::{
 };
 
 /* Internal modules for gRPC ext-proc client and generated protos */
-pub mod protos;
 pub mod grpc;
 pub mod model_extractor;
 pub mod modules;
+pub mod protos;
 
-use modules::{ModuleConfig, BbrProcessor, EppProcessor};
 use modules::bbr::get_header_in;
-use modules::config::{set_on_off, set_string_opt, set_usize, set_u64};
+use modules::config::{set_on_off, set_string_opt, set_u64, set_usize};
+use modules::{BbrProcessor, EppProcessor, ModuleConfig};
+
+// Platform-conditional string pointer casting for nginx FFI
+// macOS nginx FFI expects *const i8, Linux expects *const u8
+#[cfg(target_os = "macos")]
+#[inline]
+fn cstr_ptr(s: *const u8) -> *const c_char {
+    s as *const i8
+}
+
+#[cfg(not(target_os = "macos"))]
+#[inline]
+fn cstr_ptr(s: *const u8) -> *const c_char {
+    s as *const u8 as *const c_char
+}
 
 // NGINX module for Gateway API inference extensions.
 // Pipeline (request path):
@@ -44,7 +59,7 @@ impl http::HttpModule for Module {
         // Allocate variable name from configuration pool
         let name = &mut ngx_str_t::from_str(cf_ref.pool, "inference_upstream") as *mut _;
         // Add variable with no special flags
-        let v = ngx_http_add_variable(cf as *mut ngx::ffi::ngx_conf_s, name, 0);
+        let v = ngx_http_add_variable(cf, name, 0);
         if v.is_null() {
             return core::Status::NGX_ERROR.into();
         }
@@ -72,8 +87,6 @@ impl http::HttpModule for Module {
         core::Status::NGX_OK.into()
     }
 }
-
-
 
 unsafe impl HttpModuleLocationConf for Module {
     type LocationConf = ModuleConfig;
@@ -123,7 +136,11 @@ extern "C" fn ngx_http_inference_set_bbr_failure_mode_allow(
         let val = match args[1].to_str() {
             Ok(s) => s,
             Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_failure_mode_allow` not utf-8");
+                ngx_conf_log_error!(
+                    NGX_LOG_EMERG,
+                    cf,
+                    "`inference_bbr_failure_mode_allow` not utf-8"
+                );
                 return core::NGX_CONF_ERROR;
             }
         };
@@ -131,7 +148,11 @@ extern "C" fn ngx_http_inference_set_bbr_failure_mode_allow(
         match set_on_off(val) {
             Some(b) => conf.bbr_failure_mode_allow = b,
             None => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_failure_mode_allow` expects on|off");
+                ngx_conf_log_error!(
+                    NGX_LOG_EMERG,
+                    cf,
+                    "`inference_bbr_failure_mode_allow` expects on|off"
+                );
                 return core::NGX_CONF_ERROR;
             }
         }
@@ -158,7 +179,11 @@ extern "C" fn ngx_http_inference_set_bbr_max_body_size(
         };
 
         if set_usize(&mut conf.bbr_max_body_size, val).is_err() {
-            ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_max_body_size` must be usize");
+            ngx_conf_log_error!(
+                NGX_LOG_EMERG,
+                cf,
+                "`inference_bbr_max_body_size` must be usize"
+            );
             return core::NGX_CONF_ERROR;
         }
     }
@@ -301,7 +326,11 @@ extern "C" fn ngx_http_inference_set_epp_failure_mode_allow(
         let val = match args[1].to_str() {
             Ok(s) => s,
             Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp_failure_mode_allow` not utf-8");
+                ngx_conf_log_error!(
+                    NGX_LOG_EMERG,
+                    cf,
+                    "`inference_epp_failure_mode_allow` not utf-8"
+                );
                 return core::NGX_CONF_ERROR;
             }
         };
@@ -309,7 +338,11 @@ extern "C" fn ngx_http_inference_set_epp_failure_mode_allow(
         match set_on_off(val) {
             Some(b) => conf.epp_failure_mode_allow = b,
             None => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp_failure_mode_allow` expects on|off");
+                ngx_conf_log_error!(
+                    NGX_LOG_EMERG,
+                    cf,
+                    "`inference_epp_failure_mode_allow` expects on|off"
+                );
                 return core::NGX_CONF_ERROR;
             }
         }
@@ -344,7 +377,8 @@ extern "C" fn ngx_http_inference_set_epp_header_name(
 static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     ngx_command_t {
         name: ngx_string!("inference_bbr"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
         set: Some(ngx_http_inference_set_bbr_enable),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
@@ -352,7 +386,8 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     },
     ngx_command_t {
         name: ngx_string!("inference_bbr_max_body_size"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
         set: Some(ngx_http_inference_set_bbr_max_body_size),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
@@ -360,7 +395,8 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     },
     ngx_command_t {
         name: ngx_string!("inference_bbr_failure_mode_allow"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
         set: Some(ngx_http_inference_set_bbr_failure_mode_allow),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
@@ -368,7 +404,8 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     },
     ngx_command_t {
         name: ngx_string!("inference_bbr_header_name"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
         set: Some(ngx_http_inference_set_bbr_header_name),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
@@ -376,7 +413,8 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     },
     ngx_command_t {
         name: ngx_string!("inference_bbr_default_model"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
         set: Some(ngx_http_inference_set_bbr_default_model),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
@@ -384,7 +422,8 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     },
     ngx_command_t {
         name: ngx_string!("inference_epp"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
         set: Some(ngx_http_inference_set_epp_enable),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
@@ -392,7 +431,8 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     },
     ngx_command_t {
         name: ngx_string!("inference_epp_endpoint"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
         set: Some(ngx_http_inference_set_epp_endpoint),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
@@ -400,7 +440,8 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     },
     ngx_command_t {
         name: ngx_string!("inference_epp_timeout_ms"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
         set: Some(ngx_http_inference_set_epp_timeout_ms),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
@@ -408,7 +449,8 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     },
     ngx_command_t {
         name: ngx_string!("inference_epp_failure_mode_allow"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
         set: Some(ngx_http_inference_set_epp_failure_mode_allow),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
@@ -416,7 +458,8 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
     },
     ngx_command_t {
         name: ngx_string!("inference_epp_header_name"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1) as ngx_uint_t,
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
         set: Some(ngx_http_inference_set_epp_header_name),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
@@ -454,60 +497,67 @@ pub static mut ngx_http_inference_module: ngx_module_t = ngx_module_t {
 // Exposes the value of the "X-Inference-Upstream" header set by EPP for upstream selection.
 // Usage: proxy_pass http://$inference_upstream; (configured endpoint from EPP response)
 
-http_variable_get!(inference_upstream_var_get, |request: &mut http::Request, v: *mut ngx::ffi::ngx_variable_value_t, _data: usize| {
-    // Evaluate $inference_upstream from "X-Inference-Upstream" header
-    unsafe {
-        if v.is_null() {
-            return core::Status::NGX_ERROR;
-        }
-        let conf = match Module::location_conf(request) {
-            Some(c) => c,
-            None => {
-                // mark not found on missing config
-                (*v).set_not_found(1);
-                (*v).set_len(0);
-                (*v).data = ::core::ptr::null_mut();
-                return core::Status::NGX_OK;
-            }
-        };
-        let upstream_header = if conf.epp_header_name.is_empty() { "X-Inference-Upstream".to_string() } else { conf.epp_header_name.clone() };
-        if let Some(val) = get_header_in(request, &upstream_header) {
-            let bytes = val.as_bytes();
-            if bytes.is_empty() {
-                (*v).set_not_found(1);
-                (*v).set_len(0);
-                (*v).data = ::core::ptr::null_mut();
-                return core::Status::NGX_OK;
-            }
-            // allocate buffer from request pool
-            let pool = request.pool();
-            let data_ptr = pool.alloc(bytes.len());
-            if data_ptr.is_null() {
-                // mark not found on error
-                (*v).set_not_found(1);
-                (*v).set_len(0);
-                (*v).data = ::core::ptr::null_mut();
+http_variable_get!(
+    inference_upstream_var_get,
+    |request: &mut http::Request, v: *mut ngx::ffi::ngx_variable_value_t, _data: usize| {
+        // Evaluate $inference_upstream from "X-Inference-Upstream" header
+        unsafe {
+            if v.is_null() {
                 return core::Status::NGX_ERROR;
             }
-            ::core::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr as *mut u8, bytes.len());
-            // set ngx_variable_value_t fields
-            (*v).set_len(bytes.len() as u32);
-            (*v).set_valid(1);
-            (*v).set_no_cacheable(0);
-            (*v).set_escape(0);
-            (*v).set_not_found(0);
-            (*v).data = data_ptr as *mut u8;
-        } else {
-            // mark variable as not found
-            (*v).set_not_found(1);
-            (*v).set_len(0);
-            (*v).data = ::core::ptr::null_mut();
+            let conf = match Module::location_conf(request) {
+                Some(c) => c,
+                None => {
+                    // mark not found on missing config
+                    (*v).set_not_found(1);
+                    (*v).set_len(0);
+                    (*v).data = ::core::ptr::null_mut();
+                    return core::Status::NGX_OK;
+                }
+            };
+            let upstream_header = if conf.epp_header_name.is_empty() {
+                "X-Inference-Upstream".to_string()
+            } else {
+                conf.epp_header_name.clone()
+            };
+            if let Some(val) = get_header_in(request, &upstream_header) {
+                let bytes = val.as_bytes();
+                if bytes.is_empty() {
+                    (*v).set_not_found(1);
+                    (*v).set_len(0);
+                    (*v).data = ::core::ptr::null_mut();
+                    return core::Status::NGX_OK;
+                }
+                // allocate buffer from request pool
+                let pool = request.pool();
+                let data_ptr = pool.alloc(bytes.len());
+                if data_ptr.is_null() {
+                    // mark not found on error
+                    (*v).set_not_found(1);
+                    (*v).set_len(0);
+                    (*v).data = ::core::ptr::null_mut();
+                    return core::Status::NGX_ERROR;
+                }
+                ::core::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr as *mut u8, bytes.len());
+                // set ngx_variable_value_t fields
+                (*v).set_len(bytes.len() as u32);
+                (*v).set_valid(1);
+                (*v).set_no_cacheable(0);
+                (*v).set_escape(0);
+                (*v).set_not_found(0);
+                (*v).data = data_ptr as *mut u8;
+            } else {
+                // mark variable as not found
+                (*v).set_not_found(1);
+                (*v).set_len(0);
+                (*v).data = ::core::ptr::null_mut();
+            }
         }
+        core::Status::NGX_OK
     }
-    core::Status::NGX_OK
-});
+);
 
- // -------------------- Access Phase Handler --------------------
+// -------------------- Access Phase Handler --------------------
 
 http_request_handler!(inference_access_handler, |request: &mut http::Request| {
     let conf = match Module::location_conf(request) {
@@ -518,9 +568,9 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
                 let msg = b"ngx-inference: module config missing\0";
                 ngx::ffi::ngx_log_error_core(
                     ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
-                    (*request.as_mut()).connection.as_ref().unwrap().log,
+                    request.as_mut().connection.as_ref().unwrap().log,
                     0,
-                    msg.as_ptr(),
+                    cstr_ptr(msg.as_ptr()),
                 );
             }
             return core::Status::NGX_DECLINED;
@@ -539,8 +589,10 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
             }
             core::Status::NGX_OK => {
                 // Check if request was finalized (e.g., 413 error)
-                let response_status = unsafe { (*request.as_mut()).headers_out.status };
-                if response_status == ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t {
+                let response_status = request.as_mut().headers_out.status;
+                if response_status
+                    == ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t
+                {
                     // Request was finalized with 413, don't continue processing
                     return core::Status::NGX_OK;
                 }
@@ -574,7 +626,8 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
                             ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
                             (*(*r_ptr).connection).log,
                             0,
-                            b"ngx-inference: EPP rejected request with HTTP 502 - external processor error\0".as_ptr(),
+                            #[allow(clippy::manual_c_str_literals)] // FFI code
+                            cstr_ptr(b"ngx-inference: EPP rejected request with HTTP 502 - external processor error\0".as_ptr()),
                         );
                     }
                     return http::HTTPStatus::BAD_GATEWAY.into();
@@ -586,7 +639,5 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
     // Continue normal processing
     core::Status::NGX_DECLINED
 });
-
-
 
 // Module configuration and command definitions...

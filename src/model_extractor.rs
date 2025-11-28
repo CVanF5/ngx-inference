@@ -8,7 +8,8 @@ pub fn extract_model_from_body(body: &[u8]) -> Option<String> {
     // Parse JSON to extract model field following OpenAI API specification
     if let Ok(json_str) = std::str::from_utf8(body) {
         if let Ok(json) = serde_json::from_str::<Value>(json_str) {
-            return json.get("model")
+            return json
+                .get("model")
                 .and_then(|v| v.as_str())
                 .map(|s| s.to_string());
         }
@@ -156,14 +157,18 @@ mod tests {
     #[test]
     fn test_extract_model_from_body_large_json() {
         let large_content = "x".repeat(1000);
-        let json_body = format!(r#"{{"model": "gpt-4", "large_field": "{}", "prompt": "test"}}"#, large_content);
+        let json_body = format!(
+            r#"{{"model": "gpt-4", "large_field": "{}", "prompt": "test"}}"#,
+            large_content
+        );
         let result = extract_model_from_body(json_body.as_bytes());
         assert_eq!(result, Some("gpt-4".to_string()));
     }
 
     #[test]
     fn test_extract_model_from_body_deeply_nested() {
-        let json_body = r#"{"model": "gpt-4", "nested": {"level1": {"level2": {"level3": "deep"}}}}"#;
+        let json_body =
+            r#"{"model": "gpt-4", "nested": {"level1": {"level2": {"level3": "deep"}}}}"#;
         let result = extract_model_from_body(json_body.as_bytes());
         assert_eq!(result, Some("gpt-4".to_string()));
     }

@@ -100,7 +100,7 @@ flowchart TD
   A[Client Request] --> B[NGINX]
   subgraph NGINX Pod
     subgraph NGINX Container
-      B --1--> C[Inference Module<br/> with internal BBR]
+      B --1--> C[Inference Module<br/> with Body-Based Routing]
     end
   end
   C -- 2. gRPC headers --> D[EPP Service<br/>Endpoint Picker]
@@ -112,116 +112,29 @@ flowchart TD
 Testing
 -------
 
-### Quick Start with Docker Compose
+For comprehensive testing information, examples, and troubleshooting guides, see [tests/README.md](tests/README.md).
 
-The project includes a complete testing environment with Docker Compose that sets up:
-- NGINX with the ngx-inference module loaded
-- Mock external processors for both BBR and EPP
-- Echo server as upstream target
+### Local Development Setup
 
-1. **Start the test environment:**
+For local development and testing without Docker:
+
+1. **Setup local environment and build the module:**
    ```bash
-   docker-compose up --build
+   # Setup local development environment
+   make setup-local
+
+   # Build the module
+   make build
    ```
 
-2. **Test EPP (Endpoint Picker Processor):**
+2. **Start local services and run tests:**
    ```bash
-   # Headers-only request - EPP selects upstream based on headers
-   curl -i http://localhost:8081/epp-test \
-     -H "Content-Type: application/json" \
-     -H "X-Request-Id: test-epp-123"
+   # Start local nginx with the compiled module plus mock services
+   make start-local
+
+   # Run configuration tests locally
+   make test-local
    ```
-
-3. **Test BBR (Body-Based Routing) with JSON model detection:**
-   ```bash
-   # Request with JSON body - BBR extracts model name from "model" field
-   curl -i http://localhost:8081/bbr-test \
-     -H "Content-Type: application/json" \
-     -d '{"model": "gpt-4", "prompt": "Hello world", "temperature": 0.7}'
-   ```
-
-4. **Test BBR with fallback model:**
-   ```bash
-   # JSON without "model" field - BBR uses configured fallback
-   curl -i http://localhost:8081/bbr-test \
-     -H "Content-Type: application/json" \
-     -d '{"prompt": "Hello world", "temperature": 0.7}'
-   ```
-
-5. **Test combined BBR + EPP pipeline:**
-   ```bash
-   # JSON with model field - both BBR and EPP process the request
-   curl -i http://localhost:8081/responses \
-     -H "Content-Type: application/json" \
-     -H "X-Client-Id: mobile-app" \
-     -d '{"model": "claude-3", "messages": [{"role": "user", "content": "Hello"}]}'
-   ```
-
-### Expected Response Headers
-
-When testing, you should see these headers in the echo server response indicating successful processing:
-
-- `x-gateway-model-name` - Set by BBR based on JSON "model" field
-- `x-inference-upstream` - Set by EPP for upstream selection
-- Original request headers forwarded to the upstream
-
-### Test Environment Components
-
-The Docker Compose stack includes:
-
-- **nginx** (port 8081) - NGINX with ngx-inference module
-- **extproc-epp** (internal port 9001) - Mock EPP external processor
-- **echo-server** (internal port 80) - Target upstream that echoes request details
-
-### Manual Testing Setup
-
-If you prefer to test without Docker:
-
-1. **Build the module:**
-   ```bash
-   cargo build --features "vendored,export-modules" --release
-   ```
-
-2. **Start mock external processors:**
-   ```bash
-   # Terminal 1: BBR mock (port 9000)
-   EPP_UPSTREAM=localhost:8080 BBR_MODEL=test-model MOCK_ROLE=BBR \
-     cargo run --bin extproc_mock --features extproc-mock -- 0.0.0.0:9000
-
-   # Terminal 2: EPP mock (port 9001)
-   EPP_UPSTREAM=localhost:8080 MOCK_ROLE=EPP \
-     cargo run --bin extproc_mock --features extproc-mock -- 0.0.0.0:9001
-
-   # Terminal 3: Simple upstream server
-   python3 -m http.server 8080
-   ```
-
-3. **Configure and start NGINX:**
-   ```nginx
-   load_module /path/to/target/release/libngx_inference.so;
-   # ... rest of configuration similar to docker/nginx.conf
-   ```
-
-### Troubleshooting Tests
-
-- **502 Bad Gateway:** Check if external processors are running and reachable
-  - Enable fail-open mode: `inference_*_failure_mode_allow on`
-  - Verify endpoints: `inference_bbr_endpoint` and `inference_epp_endpoint`
-
-- **Headers not set:**
-  - Check external processor logs for JSON parsing errors
-  - Verify Content-Type is `application/json` for BBR tests
-  - Ensure JSON contains valid "model" field for BBR
-
-- **DNS resolution errors:**
-  - In Docker: Use service names (`extproc-bbr:9000`)
-  - Local testing: Use `localhost` or `127.0.0.1`
-  - Check NGINX resolver configuration
-
-- **Module not loading:**
-  - Verify dynamic library path in `load_module` directive
-  - Check NGINX error log for loading errors
-  - Ensure library was built with `export-modules` feature
 
 Troubleshooting
 ---------------

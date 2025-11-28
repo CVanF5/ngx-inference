@@ -53,7 +53,11 @@ impl ngx::http::Merge for ModuleConfig {
 
         // Inherit numeric with defaults
         if self.epp_timeout_ms == 0 {
-            self.epp_timeout_ms = if prev.epp_timeout_ms == 0 { 200 } else { prev.epp_timeout_ms };
+            self.epp_timeout_ms = if prev.epp_timeout_ms == 0 {
+                200
+            } else {
+                prev.epp_timeout_ms
+            };
         }
         if self.bbr_header_name.is_empty() {
             self.bbr_header_name = if prev.bbr_header_name.is_empty() {
@@ -70,10 +74,10 @@ impl ngx::http::Merge for ModuleConfig {
             }
         }
         if self.bbr_max_body_size == 0 {
-            self.bbr_max_body_size = if prev.bbr_max_body_size == 0 { 
-                10 * 1024 * 1024 
-            } else { 
-                prev.bbr_max_body_size 
+            self.bbr_max_body_size = if prev.bbr_max_body_size == 0 {
+                10 * 1024 * 1024
+            } else {
+                prev.bbr_max_body_size
             }; // 10MB default
         }
         if self.epp_header_name.is_empty() {
@@ -113,22 +117,25 @@ pub fn set_string_opt(target: &mut Option<String>, val: &str) {
     }
 }
 
-pub fn set_usize(target: &mut usize, val: &str) -> Result<(), ()> {
+#[derive(Debug)]
+pub struct ParseError;
+
+pub fn set_usize(target: &mut usize, val: &str) -> Result<(), ParseError> {
     match val.parse::<usize>() {
-        Ok(v) => {
-            *target = v;
+        Ok(parsed) => {
+            *target = parsed;
             Ok(())
         }
-        Err(_) => Err(()),
+        Err(_) => Err(ParseError),
     }
 }
 
-pub fn set_u64(target: &mut u64, val: &str) -> Result<(), ()> {
+pub fn set_u64(target: &mut u64, val: &str) -> Result<(), ParseError> {
     match val.parse::<u64>() {
-        Ok(v) => {
-            *target = v;
+        Ok(parsed) => {
+            *target = parsed;
             Ok(())
         }
-        Err(_) => Err(()),
+        Err(_) => Err(ParseError),
     }
 }

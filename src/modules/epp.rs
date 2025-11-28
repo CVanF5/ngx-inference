@@ -1,5 +1,5 @@
+use crate::modules::{bbr::get_header_in, config::ModuleConfig};
 use ngx::http;
-use crate::modules::{config::ModuleConfig, bbr::get_header_in};
 
 /// EPP (Endpoint Picker Processor) processor
 /// Communicates with external gRPC services to determine upstream routing
@@ -7,7 +7,10 @@ pub struct EppProcessor;
 
 impl EppProcessor {
     /// Process EPP for a request if enabled
-    pub fn process_request(request: &mut http::Request, conf: &ModuleConfig) -> Result<(), &'static str> {
+    pub fn process_request(
+        request: &mut http::Request,
+        conf: &ModuleConfig,
+    ) -> Result<(), &'static str> {
         if !conf.epp_enable {
             return Ok(());
         }
@@ -22,10 +25,10 @@ impl EppProcessor {
             _ => return Ok(()),
         };
 
-        let upstream_header = if conf.epp_header_name.is_empty() { 
-            "X-Inference-Upstream".to_string() 
-        } else { 
-            conf.epp_header_name.clone() 
+        let upstream_header = if conf.epp_header_name.is_empty() {
+            "X-Inference-Upstream".to_string()
+        } else {
+            conf.epp_header_name.clone()
         };
         let upstream_header_str = upstream_header.as_str();
 
@@ -34,7 +37,7 @@ impl EppProcessor {
             return Ok(());
         }
 
-        // Call gRPC client: forward incoming headers to EPP for richer context; 
+        // Call gRPC client: forward incoming headers to EPP for richer context;
         // headers-only request to pick upstream.
         let mut hdrs: Vec<(String, String)> = Vec::new();
         for (name, value) in request.headers_in_iterator() {
@@ -43,7 +46,12 @@ impl EppProcessor {
             }
         }
 
-        match crate::grpc::epp_headers_blocking(endpoint, conf.epp_timeout_ms, upstream_header_str, hdrs) {
+        match crate::grpc::epp_headers_blocking(
+            endpoint,
+            conf.epp_timeout_ms,
+            upstream_header_str,
+            hdrs,
+        ) {
             Ok(Some(val)) => {
                 // Write upstream selection header for variable consumption.
                 let _ = request.add_header_in(upstream_header_str, &val);

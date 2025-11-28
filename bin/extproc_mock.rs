@@ -115,7 +115,10 @@ struct ExtProcMock {
 #[tonic::async_trait]
 impl ExternalProcessor for ExtProcMock {
     type ProcessStream = ReceiverStream<Result<ProcessingResponse, Status>>;
-    async fn process(&self, request: Request<tonic::Streaming<ProcessingRequest>>) -> Result<Response<Self::ProcessStream>, Status> {
+    async fn process(
+        &self,
+        request: Request<tonic::Streaming<ProcessingRequest>>,
+    ) -> Result<Response<Self::ProcessStream>, Status> {
         let mut inbound = request.into_inner();
         let (tx, rx) = mpsc::channel::<Result<ProcessingResponse, Status>>(32);
         let epp_upstream = self.epp_upstream.clone();
@@ -129,38 +132,85 @@ impl ExternalProcessor for ExtProcMock {
                 match msg {
                     Ok(pr) => match pr.request {
                         Some(processing_request::Request::RequestHeaders(_)) => {
-                            if role == "EPP" { 
-                                eprintln!("extproc_mock: EPP headers received, selecting endpoint: {}", epp_upstream);
-                                let resp = ProcessingResponse { response: Some(processing_response::Response::RequestHeaders(build_headers_response(&epp_upstream, &bbr_model))), dynamic_metadata: None, mode_override: None, override_message_timeout: None }; if tx.send(Ok(resp)).await.is_err() { break; } sent_headers_response = true; 
+                            if role == "EPP" {
+                                eprintln!(
+                                    "extproc_mock: EPP headers received, selecting endpoint: {}",
+                                    epp_upstream
+                                );
+                                let resp = ProcessingResponse {
+                                    response: Some(processing_response::Response::RequestHeaders(
+                                        build_headers_response(&epp_upstream, &bbr_model),
+                                    )),
+                                    dynamic_metadata: None,
+                                    mode_override: None,
+                                    override_message_timeout: None,
+                                };
+                                if tx.send(Ok(resp)).await.is_err() {
+                                    break;
+                                }
+                                sent_headers_response = true;
                             } else {
-                                eprintln!("extproc_mock: BBR headers received, waiting for body...");
+                                eprintln!(
+                                    "extproc_mock: BBR headers received, waiting for body..."
+                                );
                             }
                         }
                         Some(processing_request::Request::RequestBody(body)) => {
                             body_buf.extend_from_slice(&body.body);
-                            if body.end_of_stream { 
-                                eprintln!("extproc_mock: end of stream, body size: {} bytes", body_buf.len());
-                                if let Ok(v) = serde_json::from_slice::<Value>(&body_buf) { 
-                                    if let Some(m) = v.get("model").and_then(|x| x.as_str()) { 
+                            if body.end_of_stream {
+                                eprintln!(
+                                    "extproc_mock: end of stream, body size: {} bytes",
+                                    body_buf.len()
+                                );
+                                if let Ok(v) = serde_json::from_slice::<Value>(&body_buf) {
+                                    if let Some(m) = v.get("model").and_then(|x| x.as_str()) {
                                         current_bbr_model = m.to_string();
-                                        eprintln!("extproc_mock: detected model in JSON body: {}", current_bbr_model);
-                                    } 
-                                } 
-                                let resp = ProcessingResponse { response: Some(processing_response::Response::RequestBody(build_body_response(&epp_upstream, &current_bbr_model))), dynamic_metadata: None, mode_override: None, override_message_timeout: None }; 
-                                if role == "BBR" {
-                                    eprintln!("extproc_mock: BBR final response - model: {}", current_bbr_model);
+                                        eprintln!(
+                                            "extproc_mock: detected model in JSON body: {}",
+                                            current_bbr_model
+                                        );
+                                    }
                                 }
-                                if tx.send(Ok(resp)).await.is_err() { break; } 
+                                let resp = ProcessingResponse {
+                                    response: Some(processing_response::Response::RequestBody(
+                                        build_body_response(&epp_upstream, &current_bbr_model),
+                                    )),
+                                    dynamic_metadata: None,
+                                    mode_override: None,
+                                    override_message_timeout: None,
+                                };
+                                if role == "BBR" {
+                                    eprintln!(
+                                        "extproc_mock: BBR final response - model: {}",
+                                        current_bbr_model
+                                    );
+                                }
+                                if tx.send(Ok(resp)).await.is_err() {
+                                    break;
+                                }
                             } else {
                                 eprintln!("extproc_mock: received body chunk, size: {} bytes, total: {} bytes", body.body.len(), body_buf.len());
                             }
                         }
                         _ => {}
                     },
-                    Err(status) => { let _ = tx.send(Err(status)).await; break; }
+                    Err(status) => {
+                        let _ = tx.send(Err(status)).await;
+                        break;
+                    }
                 }
             }
-            if !sent_headers_response && role == "EPP" { let resp = ProcessingResponse { response: Some(processing_response::Response::RequestHeaders(build_headers_response(&epp_upstream, &bbr_model))), dynamic_metadata: None, mode_override: None, override_message_timeout: None }; let _ = tx.send(Ok(resp)).await; }
+            if !sent_headers_response && role == "EPP" {
+                let resp = ProcessingResponse {
+                    response: Some(processing_response::Response::RequestHeaders(
+                        build_headers_response(&epp_upstream, &bbr_model),
+                    )),
+                    dynamic_metadata: None,
+                    mode_override: None,
+                    override_message_timeout: None,
+                };
+                let _ = tx.send(Ok(resp)).await;
+            }
         });
         Ok(Response::new(ReceiverStream::new(rx)))
     }
@@ -168,15 +218,37 @@ impl ExternalProcessor for ExtProcMock {
 
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let addr: SocketAddr = std::env::args().nth(1).unwrap_or_else(|| "0.0.0.0:9001".to_string()).parse()?;
-    let epp_upstream = env::var("EPP_UPSTREAM").unwrap_or_else(|_| "host.docker.internal:18080".to_string());
+    let addr: SocketAddr = std::env::args()
+        .nth(1)
+        .unwrap_or_else(|| "0.0.0.0:9001".to_string())
+        .parse()?;
+    let epp_upstream =
+        env::var("EPP_UPSTREAM").unwrap_or_else(|_| "host.docker.internal:18080".to_string());
     let bbr_model = env::var("BBR_MODEL").unwrap_or_else(|_| "bbr-chosen-model".to_string());
-    let default_role = if addr.port() == 9001 { "EPP" } else if addr.port() == 9000 { "BBR" } else { "EPP" }; 
+    let default_role = if addr.port() == 9001 {
+        "EPP"
+    } else if addr.port() == 9000 {
+        "BBR"
+    } else {
+        "EPP"
+    };
     let role = env::var("MOCK_ROLE").unwrap_or_else(|_| default_role.to_string());
 
-    println!("extproc_mock: role={}, configured EPP_UPSTREAM={}, BBR_MODEL={}", role, epp_upstream, bbr_model);
+    println!(
+        "extproc_mock: role={}, configured EPP_UPSTREAM={}, BBR_MODEL={}",
+        role, epp_upstream, bbr_model
+    );
 
-    let svc = ExtProcMock { epp_upstream, bbr_model, role };
+    let svc = ExtProcMock {
+        epp_upstream,
+        bbr_model,
+        role,
+    };
 
     println!("extproc_mock listening on {}", addr);
-    tonic::transport::Server::builder().add_service(ExternalProcessorServer::new(svc)).serve(addr).await?; Ok(()) }
+    tonic::transport::Server::builder()
+        .add_service(ExternalProcessorServer::new(svc))
+        .serve(addr)
+        .await?;
+    Ok(())
+}

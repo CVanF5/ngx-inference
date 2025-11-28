@@ -16,7 +16,7 @@ static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 fn get_runtime() -> &'static tokio::runtime::Runtime {
     RUNTIME.get_or_init(|| {
         tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)  // Minimal thread pool for gRPC operations
+            .worker_threads(2) // Minimal thread pool for gRPC operations
             .enable_all()
             .thread_name("ngx-inference-grpc")
             .build()
@@ -31,8 +31,7 @@ type ProcessingRequest = envoy::service::ext_proc::v3::ProcessingRequest;
 type ProcessingResponse = envoy::service::ext_proc::v3::ProcessingResponse;
 
 type ProtocolConfiguration = envoy::service::ext_proc::v3::ProtocolConfiguration;
-type BodySendMode =
-    envoy::extensions::filters::http::ext_proc::v3::processing_mode::BodySendMode;
+type BodySendMode = envoy::extensions::filters::http::ext_proc::v3::processing_mode::BodySendMode;
 
 type HttpHeaders = envoy::service::ext_proc::v3::HttpHeaders;
 type HeaderMap = envoy::config::core::v3::HeaderMap;
@@ -65,31 +64,28 @@ fn extract_header_from_mutation(
     None
 }
 
-fn parse_response_for_header(
-    resp: &ProcessingResponse,
-    target_key_lower: &str,
-) -> Option<String> {
+fn parse_response_for_header(resp: &ProcessingResponse, target_key_lower: &str) -> Option<String> {
     use envoy::service::ext_proc::v3::processing_response;
 
     match &resp.response {
-        Some(processing_response::Response::RequestHeaders(hdrs)) |
-        Some(processing_response::Response::ResponseHeaders(hdrs)) => {
+        Some(processing_response::Response::RequestHeaders(hdrs))
+        | Some(processing_response::Response::ResponseHeaders(hdrs)) => {
             if let Some(common) = &hdrs.response {
                 if let Some(hm) = &common.header_mutation {
                     return extract_header_from_mutation(hm, target_key_lower);
                 }
             }
         }
-        Some(processing_response::Response::RequestBody(body)) |
-        Some(processing_response::Response::ResponseBody(body)) => {
+        Some(processing_response::Response::RequestBody(body))
+        | Some(processing_response::Response::ResponseBody(body)) => {
             if let Some(common) = &body.response {
                 if let Some(hm) = &common.header_mutation {
                     return extract_header_from_mutation(hm, target_key_lower);
                 }
             }
         }
-        Some(processing_response::Response::RequestTrailers(tr)) |
-        Some(processing_response::Response::ResponseTrailers(tr)) => {
+        Some(processing_response::Response::RequestTrailers(tr))
+        | Some(processing_response::Response::ResponseTrailers(tr)) => {
             if let Some(hm) = &tr.header_mutation {
                 return extract_header_from_mutation(hm, target_key_lower);
             }
@@ -143,7 +139,9 @@ pub fn epp_headers_blocking(
                 raw_value: Vec::new(),
             });
         }
-        let header_map = HeaderMap { headers: header_entries };
+        let header_map = HeaderMap {
+            headers: header_entries,
+        };
 
         let req_headers = HttpHeaders {
             headers: Some(header_map),
@@ -171,7 +169,12 @@ pub fn epp_headers_blocking(
         let next = if timeout_ms == 0 {
             inbound.message().await
         } else {
-            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), inbound.message()).await {
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(timeout_ms),
+                inbound.message(),
+            )
+            .await
+            {
                 Ok(res) => res,
                 Err(_) => return Ok(None),
             }

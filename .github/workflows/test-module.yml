@@ -9,61 +9,29 @@ on:
 jobs:
   module-toggle-tests:
     runs-on: ubuntu-latest
-    
+
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
-      
-    - name: Install dependencies
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y curl jq
-        
+
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
-      
-    - name: Build and start services
+
+    - name: Run Docker tests
       run: |
-        docker-compose up -d --build
-        
-    - name: Wait for services to be ready
-      run: |
-        echo "Waiting for services..."
-        sleep 30
-        
-        # Health check with retries
-        for i in {1..10}; do
-          if curl -f http://localhost:8081/health; then
-            echo "Services are ready"
-            break
-          fi
-          echo "Waiting for services... (attempt $i/10)"
-          sleep 10
-        done
-        
-    - name: Run module configuration tests
-      run: |
-        chmod +x ./tests/test_docker_simple.sh
-        ./tests/test_docker_simple.sh
-        
-    - name: Run original BBR functionality tests
-      run: |
-        chmod +x ./tests/test_large_body.sh
-        # Adapt for Docker environment
-        sed -i 's/localhost:8081/localhost:8081/g' ./tests/test_large_body.sh
-        ./tests/test_large_body.sh
-        
+        make test-docker
+
     - name: Show service logs on failure
       if: failure()
       run: |
         echo "=== Nginx logs ==="
-        docker-compose logs nginx
+        docker compose -f tests/docker-compose.yml logs nginx
         echo "=== Echo server logs ==="
-        docker-compose logs echo-server
+        docker compose -f tests/docker-compose.yml logs echo-server
         echo "=== Mock EPP logs ==="
-        docker-compose logs mock-epp
-        
+        docker compose -f tests/docker-compose.yml logs mock-epp
+
     - name: Cleanup
       if: always()
       run: |
-        docker-compose down -v
+        make clean

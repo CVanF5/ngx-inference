@@ -29,10 +29,10 @@ app.use('/', (req, res) => {
     },
     environment: process.env
   };
-  
+
   const bodySize = req.body ? JSON.stringify(req.body).length : 0;
   console.log(`${new Date().toISOString()} ${req.method} ${req.originalUrl} - Body size: ${bodySize} bytes`);
-  
+
   res.json(response);
 });
 

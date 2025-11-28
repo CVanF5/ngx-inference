@@ -138,7 +138,7 @@ Contains the upstream endpoint selected by the EPP processor. This variable can 
 location /api/ {
     inference_epp on;
     inference_epp_endpoint "epp-service:9001";
-    
+
     # Use the dynamically selected upstream
     proxy_pass http://$inference_upstream;
 }
@@ -151,11 +151,11 @@ location /api/ {
 ```nginx
 server {
     listen 80;
-    
+
     location /v1/chat/completions {
         inference_bbr on;
         inference_bbr_max_body_size 20971520; # 20MB
-        
+
         proxy_pass http://ai-backend:8080;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
@@ -169,19 +169,19 @@ server {
 ```nginx
 server {
     listen 80;
-    
+
     location /v1/chat/completions {
         # Enable BBR for model extraction
         inference_bbr on;
         inference_bbr_max_body_size 104857600; # 100MB
         inference_bbr_failure_mode_allow off; # Fail-closed
-        
+
         # Enable EPP for intelligent routing
         inference_epp on;
         inference_epp_endpoint "epp-service:9001";
         inference_epp_timeout_ms 3000;
         inference_epp_failure_mode_allow off; # Fail-closed
-        
+
         # Route to dynamically selected upstream
         proxy_pass http://$inference_upstream;
         proxy_http_version 1.1;
@@ -189,7 +189,7 @@ server {
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        
+
         # Timeouts for AI workloads
         proxy_connect_timeout 30s;
         proxy_send_timeout 300s;

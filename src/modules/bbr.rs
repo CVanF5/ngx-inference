@@ -1,9 +1,23 @@
-use std::ffi::c_void;
-use ngx::{core, http, ngx_log_debug_http};
-use ngx::http::HttpModuleLocationConf;
+use crate::model_extractor::extract_model_from_body;
 use crate::modules::config::ModuleConfig;
 use crate::Module;
-use crate::model_extractor::extract_model_from_body;
+use ngx::http::HttpModuleLocationConf;
+use ngx::{core, http, ngx_log_debug_http};
+use std::ffi::{c_char, c_void};
+
+// Platform-conditional string pointer casting for nginx FFI
+// macOS nginx FFI expects *const i8, Linux expects *const u8
+#[cfg(target_os = "macos")]
+#[inline]
+fn cstr_ptr(s: *const u8) -> *const c_char {
+    s as *const i8
+}
+
+#[cfg(not(target_os = "macos"))]
+#[inline]
+fn cstr_ptr(s: *const u8) -> *const c_char {
+    s as *const u8 as *const c_char
+}
 
 /// Get an incoming request header value by name (case-insensitive).
 pub fn get_header_in<'a>(request: &'a http::Request, key: &str) -> Option<&'a str> {
@@ -33,6 +47,12 @@ impl BbrProcessor {
             return core::Status::NGX_DECLINED;
         }
 
+        ngx_log_debug_http!(
+            request,
+            "ngx-inference: BBR processing request, max_body_size: {}",
+            conf.bbr_max_body_size
+        );
+
         let header_name = if conf.bbr_header_name.is_empty() {
             "X-Gateway-Model-Name".to_string()
         } else {
@@ -41,6 +61,11 @@ impl BbrProcessor {
 
         // If header already present, skip BBR
         if get_header_in(request, &header_name).is_some() {
+            ngx_log_debug_http!(
+                request,
+                "ngx-inference: BBR header {} already present, skipping",
+                &header_name
+            );
             return core::Status::NGX_DECLINED;
         }
 
@@ -49,36 +74,10 @@ impl BbrProcessor {
     }
 
     fn start_body_reading(request: &mut http::Request, conf: &ModuleConfig) -> core::Status {
-        // Check Content-Length against BBR limit before reading
-        if let Some(content_length_str) = get_header_in(request, "Content-Length") {
-            if let Ok(content_length) = content_length_str.parse::<usize>() {
-                if content_length > conf.bbr_max_body_size {
-                    ngx_log_debug_http!(request, "ngx-inference: BBR body size {} exceeds limit {}", 
-                                       content_length, conf.bbr_max_body_size);
-                    
-                    if !conf.bbr_failure_mode_allow {
-                        // Set 413 status and finalize request immediately
-                        unsafe {
-                            (*request.as_mut()).headers_out.status = ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
-                            ngx::ffi::ngx_log_error_core(
-                                ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
-                                (*(*request.as_mut()).connection).log,
-                                0,
-                                b"ngx-inference: BBR rejected request with HTTP 413 - payload size %uz exceeds limit %uz bytes\0".as_ptr(),
-                                content_length,
-                                conf.bbr_max_body_size
-                            );
-                            // Finalize the request immediately with 413 status
-                            ngx::ffi::ngx_http_finalize_request(request.as_mut(), ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_int_t);
-                        }
-                        return core::Status::NGX_OK; // Request handled
-                    }
-                    return core::Status::NGX_DECLINED;
-                }
-            }
-        }
+        // Start reading the request body without pre-validation
+        // We'll validate the actual body size during reading
+        ngx_log_debug_http!(request, "ngx-inference: BBR starting body reading");
 
-        // Start reading the request body
         let rc = unsafe {
             ngx::ffi::ngx_http_read_client_request_body(
                 request.as_mut(),
@@ -93,7 +92,7 @@ impl BbrProcessor {
         } else {
             core::Status::NGX_ERROR
         };
-        
+
         match status {
             core::Status::NGX_OK => core::Status::NGX_DONE, // Body reading complete, handler called
             core::Status::NGX_AGAIN => core::Status::NGX_DONE, // Body reading in progress, handler will be called
@@ -109,113 +108,130 @@ impl BbrProcessor {
 }
 
 /// Body read handler: called after ngx_http_read_client_request_body finishes reading.
-pub extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_request_t) {
-    unsafe {
-        // Validate input pointer
-        if r.is_null() {
+///
+/// # Safety
+/// This function is called by nginx C code and must be marked unsafe because it:
+/// - Dereferences raw pointers provided by nginx FFI
+/// - Modifies nginx internal request structures
+/// - Assumes the nginx request pointer is valid and not null
+#[allow(clippy::manual_c_str_literals)] // FFI code uses byte strings for cross-platform compatibility
+pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_request_t) {
+    // Validate input pointer
+    if r.is_null() {
+        return;
+    }
+
+    // Check if request body processing is already complete or not available
+    let request_body = (*r).request_body;
+    if request_body.is_null() {
+        // No request body structure, skip processing and continue
+        return;
+    }
+
+    // Check if the body is still being read
+    if (*request_body).rest > 0 {
+        // Body is still being read, don't process yet
+        return;
+    }
+
+    // Reconstruct Rust wrapper and config
+    let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
+    let conf = match Module::location_conf(request) {
+        Some(c) => c,
+        None => {
+            // No config found, resume processing
             return;
         }
+    };
 
-        // Check if request body processing is already complete or not available
-        let request_body = (*r).request_body;
-        if request_body.is_null() {
-            // No request body structure, skip processing and continue
-            return;
-        }
+    // Header name to set
+    let header_name = if conf.bbr_header_name.is_empty() {
+        "X-Gateway-Model-Name".to_string()
+    } else {
+        conf.bbr_header_name.clone()
+    };
 
-        // Check if the body is still being read
-        if (*request_body).rest > 0 {
-            // Body is still being read, don't process yet
-            return;
-        }
+    // If header already present, skip BBR and resume.
+    if get_header_in(request, &header_name).is_some() {
+        return;
+    }
 
-        // Reconstruct Rust wrapper and config
-        let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
-        let conf = match Module::location_conf(request) {
-            Some(c) => c,
-            None => {
-                // No config found, resume processing
+    // Clear the request body post_handler to prevent re-execution
+    (*(*r).request_body).post_handler = None;
+
+    // Process the request body
+    let body = match read_request_body(r, conf) {
+        Ok(body) => body,
+        Err(_) => {
+            if conf.bbr_failure_mode_allow {
+                // Continue with next phase instead of restarting phases
                 return;
-            }
-        };
-
-        // Header name to set
-        let header_name = if conf.bbr_header_name.is_empty() {
-            "X-Gateway-Model-Name".to_string()
-        } else {
-            conf.bbr_header_name.clone()
-        };
-
-        // If header already present, skip BBR and resume.
-        if get_header_in(request, &header_name).is_some() {
-            return;
-        }
-
-        // Clear the request body post_handler to prevent re-execution
-        (*(*r).request_body).post_handler = None;
-
-        // Process the request body
-        let body = match read_request_body(r, &conf) {
-            Ok(body) => body,
-            Err(_) => {
-                if conf.bbr_failure_mode_allow {
-                    // Continue with next phase instead of restarting phases
+            } else {
+                // Check if we already set a 413 status in read_request_body
+                if (*r).headers_out.status
+                    == ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t
+                {
+                    // 413 error - finalize the request immediately to prevent further processing
+                    ngx::ffi::ngx_http_finalize_request(
+                        r,
+                        ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_int_t,
+                    );
                     return;
                 } else {
-                    // Check if we already set a 413 status in read_request_body
-                    if (*r).headers_out.status == ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t {
-                        // 413 error - finalize the request immediately to prevent further processing
-                        ngx::ffi::ngx_http_finalize_request(r, ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_int_t);
-                        return;
-                    } else {
-                        // Other error - set 500 status and finalize
-                        (*r).headers_out.status = ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_uint_t;
-                        ngx::ffi::ngx_http_finalize_request(r, ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_int_t);
-                        return;
-                    }
+                    // Other error - set 500 status and finalize
+                    (*r).headers_out.status =
+                        ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_uint_t;
+                    ngx::ffi::ngx_http_finalize_request(
+                        r,
+                        ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_int_t,
+                    );
+                    return;
                 }
             }
-        };
-
-        // Extract model directly from JSON body
-        if body.is_empty() {
-            // Empty body - skip model extraction and continue processing
-            return;
         }
+    };
 
-        // Extract model name from JSON body and add header
-        if let Some(model_name) = extract_model_from_body(&body) {
-            // Add the model header to the request
-            if request.add_header_in(&header_name, &model_name).is_some() {
-                // Header set successfully - no logging needed for normal operation
-            } else {
-                ngx::ffi::ngx_log_error_core(
-                    ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
-                    (*(*r).connection).log,
-                    0,
-                    b"ngx-inference: BBR failed to set header %*s: %*s\0".as_ptr(),
-                    header_name.len(),
-                    header_name.as_ptr(),
-                    model_name.len(),
-                    model_name.as_ptr(),
-                );
-            }
-        } else {
-            // No model found - use configured default to prevent reprocessing
-            let default_model = &conf.bbr_default_model;
-            let _ = request.add_header_in(&header_name, default_model);
-            // Using default model is normal behavior - no logging needed
-        }
-
-        // Body processing complete - continue request phases
-        // Mark body as processed and continue with next phases
-        (*r).phase_handler += 1;
-        ngx::ffi::ngx_http_core_run_phases(r);
+    // Extract model directly from JSON body
+    if body.is_empty() {
+        // Empty body - skip model extraction and continue processing
+        return;
     }
+
+    // Extract model name from JSON body and add header
+    if let Some(model_name) = extract_model_from_body(&body) {
+        // Add the model header to the request
+        if request.add_header_in(&header_name, &model_name).is_some() {
+            // Header set successfully - no logging needed for normal operation
+        } else {
+            ngx::ffi::ngx_log_error_core(
+                ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
+                (*(*r).connection).log,
+                0,
+                cstr_ptr(b"ngx-inference: BBR failed to set header %*s: %*s\0".as_ptr()),
+                header_name.len(),
+                header_name.as_ptr(),
+                model_name.len(),
+                model_name.as_ptr(),
+            );
+        }
+    } else {
+        // No model found - use configured default to prevent reprocessing
+        let default_model = &conf.bbr_default_model;
+        let _ = request.add_header_in(&header_name, default_model);
+        // Using default model is normal behavior - no logging needed
+    }
+
+    // Body processing complete - continue request phases
+    // Mark body as processed and continue with next phases
+    (*r).phase_handler += 1;
+    ngx::ffi::ngx_http_core_run_phases(r);
 }
 
 /// Read the request body from memory and file buffers
-unsafe fn read_request_body(r: *mut ngx::ffi::ngx_http_request_t, conf: &ModuleConfig) -> Result<Vec<u8>, ()> {
+unsafe fn read_request_body(
+    r: *mut ngx::ffi::ngx_http_request_t,
+    conf: &ModuleConfig,
+) -> Result<Vec<u8>, ()> {
     let request_body = (*r).request_body;
     if request_body.is_null() {
         return Ok(Vec::new());
@@ -226,7 +242,7 @@ unsafe fn read_request_body(r: *mut ngx::ffi::ngx_http_request_t, conf: &ModuleC
         return Ok(Vec::new());
     }
 
-    // Get content length for pre-allocation
+    // Get content length for pre-allocation hint (but don't trust it for validation)
     let content_length = {
         let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
         get_header_in(request, "Content-Length")
@@ -234,35 +250,13 @@ unsafe fn read_request_body(r: *mut ngx::ffi::ngx_http_request_t, conf: &ModuleC
             .unwrap_or(0)
     };
 
-    // Check body size limit
-    if content_length > conf.bbr_max_body_size {
-        let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
-        ngx_log_debug_http!(request, "ngx-inference: BBR body size {} exceeds limit {}", 
-                           content_length, conf.bbr_max_body_size);
-        
-        if !conf.bbr_failure_mode_allow {
-            ngx::ffi::ngx_log_error_core(
-                ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
-                (*(*r).connection).log,
-                0,
-                b"ngx-inference: BBR rejected request with HTTP 413 - payload size %uz exceeds limit %uz bytes\0".as_ptr(),
-                content_length,
-                conf.bbr_max_body_size
-            );
-            // Set status and return error without finalize
-            (*r).headers_out.status = ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
-            return Err(());
-        }
-        return Ok(Vec::new());
-    }
-
     // Cap memory allocation to reasonable size (1MB) to prevent excessive memory usage
     let safe_capacity = std::cmp::min(content_length, 1024 * 1024);
     let mut body: Vec<u8> = Vec::with_capacity(safe_capacity);
     let mut total_read = 0usize;
 
     let mut cl = bufs;
-    while !cl.is_null() && total_read < conf.bbr_max_body_size {
+    while !cl.is_null() {
         let buf = (*cl).buf;
         if buf.is_null() {
             cl = (*cl).next;
@@ -276,32 +270,102 @@ unsafe fn read_request_body(r: *mut ngx::ffi::ngx_http_request_t, conf: &ModuleC
             let len = last.offset_from(pos);
             if len > 0 {
                 let len = len as usize;
-                if total_read + len <= conf.bbr_max_body_size {
-                    let slice = std::slice::from_raw_parts(pos as *const u8, len);
-                    body.extend_from_slice(slice);
-                    total_read += len;
-                } else {
-                    // Truncate to fit within limit
-                    let remaining = conf.bbr_max_body_size - total_read;
-                    if remaining > 0 {
-                        let slice = std::slice::from_raw_parts(pos as *const u8, remaining);
-                        body.extend_from_slice(slice);
-                        total_read += remaining;
-                        let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
-                        ngx_log_debug_http!(request, "ngx-inference: BBR capped memory buffer at {} bytes, total: {}", remaining, total_read);
+
+                // Check if adding this buffer would exceed the BBR limit
+                if total_read + len > conf.bbr_max_body_size {
+                    let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: BBR actual body size {} exceeds limit {}",
+                        total_read + len,
+                        conf.bbr_max_body_size
+                    );
+
+                    if !conf.bbr_failure_mode_allow {
+                        ngx::ffi::ngx_log_error_core(
+                            ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
+                            (*(*r).connection).log,
+                            0,
+                            #[allow(clippy::manual_c_str_literals)] // FFI code
+                            cstr_ptr(b"ngx-inference: BBR rejected request with HTTP 413 - actual payload size %uz exceeds limit %uz bytes\0".as_ptr()),
+                            total_read + len,
+                            conf.bbr_max_body_size
+                        );
+                        (*r).headers_out.status =
+                            ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
+                        return Err(());
+                    } else {
+                        // In allow mode, truncate to limit
+                        let remaining = conf.bbr_max_body_size - total_read;
+                        if remaining > 0 {
+                            let slice = std::slice::from_raw_parts(pos as *const u8, remaining);
+                            body.extend_from_slice(slice);
+                        }
+                        break;
                     }
-                    break;
                 }
+
+                let slice = std::slice::from_raw_parts(pos as *const u8, len);
+                body.extend_from_slice(slice);
+                total_read += len;
             }
         }
 
         // Handle file-backed buffers (for large bodies spilled to disk)
         let file = (*buf).file;
-        if !file.is_null() && total_read < conf.bbr_max_body_size {
+        if !file.is_null() {
             let file_pos = (*buf).file_pos;
             let file_last = (*buf).file_last;
             let file_size = (file_last - file_pos) as usize;
-            if file_size > 0 && total_read + file_size <= conf.bbr_max_body_size {
+
+            if file_size > 0 {
+                // Check if adding this file buffer would exceed the BBR limit
+                if total_read + file_size > conf.bbr_max_body_size {
+                    let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: BBR actual body size {} exceeds limit {}",
+                        total_read + file_size,
+                        conf.bbr_max_body_size
+                    );
+
+                    if !conf.bbr_failure_mode_allow {
+                        ngx::ffi::ngx_log_error_core(
+                            ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
+                            (*(*r).connection).log,
+                            0,
+                            #[allow(clippy::manual_c_str_literals)] // FFI code
+                            cstr_ptr(b"ngx-inference: BBR rejected request with HTTP 413 - actual payload size %uz exceeds limit %uz bytes\0".as_ptr()),
+                            total_read + file_size,
+                            conf.bbr_max_body_size
+                        );
+                        (*r).headers_out.status =
+                            ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
+                        return Err(());
+                    } else {
+                        // In allow mode, read only what fits within the limit
+                        let remaining = conf.bbr_max_body_size - total_read;
+                        if remaining > 0 {
+                            // Read partial file content up to the limit
+                            let fd = (*file).fd;
+                            if fd != -1 {
+                                let mut file_buffer = vec![0u8; remaining];
+                                let result = libc::pread(
+                                    fd,
+                                    file_buffer.as_mut_ptr() as *mut c_void,
+                                    remaining,
+                                    file_pos as libc::off_t,
+                                );
+                                if result > 0 {
+                                    file_buffer.truncate(result as usize);
+                                    body.extend_from_slice(&file_buffer);
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+
                 // Read from file descriptor
                 let fd = (*file).fd;
                 if fd != -1 {
@@ -319,8 +383,13 @@ unsafe fn read_request_body(r: *mut ngx::ffi::ngx_http_request_t, conf: &ModuleC
                         );
 
                         if result <= 0 {
-                            let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
-                            ngx_log_debug_http!(request, "ngx-inference: BBR file read error at offset {}", bytes_read);
+                            let request: &mut http::Request =
+                                ngx::http::Request::from_ngx_http_request(r);
+                            ngx_log_debug_http!(
+                                request,
+                                "ngx-inference: BBR file read error at offset {}",
+                                bytes_read
+                            );
                             break;
                         }
                         bytes_read += result as usize;
@@ -330,8 +399,14 @@ unsafe fn read_request_body(r: *mut ngx::ffi::ngx_http_request_t, conf: &ModuleC
                         file_buffer.truncate(bytes_read);
                         body.extend_from_slice(&file_buffer);
                         total_read += bytes_read;
-                        let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
-                        ngx_log_debug_http!(request, "ngx-inference: BBR read {} bytes from file, total: {}", bytes_read, total_read);
+                        let request: &mut http::Request =
+                            ngx::http::Request::from_ngx_http_request(r);
+                        ngx_log_debug_http!(
+                            request,
+                            "ngx-inference: BBR read {} bytes from file, total: {}",
+                            bytes_read,
+                            total_read
+                        );
                     }
                 }
             }
