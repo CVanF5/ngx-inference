@@ -171,17 +171,17 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
                 if (*r).headers_out.status
                     == ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t
                 {
-                    // 413 error - finalize the request immediately to prevent further processing
-                    ngx::ffi::ngx_http_finalize_request(
+                    // 413 error - send special response so access logging runs
+                    ngx::ffi::ngx_http_special_response_handler(
                         r,
                         ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_int_t,
                     );
                     return;
                 } else {
-                    // Other error - set 500 status and finalize
+                    // Other error - set 500 and send special response so access logging runs
                     (*r).headers_out.status =
                         ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_uint_t;
-                    ngx::ffi::ngx_http_finalize_request(
+                    ngx::ffi::ngx_http_special_response_handler(
                         r,
                         ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_int_t,
                     );

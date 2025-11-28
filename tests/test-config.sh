@@ -95,8 +95,8 @@ if [ "${DOCKER_ENVIRONMENT:-}" != "main" ] && ! command -v node >/dev/null 2>&1;
 fi
 
 # Check for docker only for main environment
-if [ "${DOCKER_ENVIRONMENT:-}" = "main" ] && ! command -v docker-compose >/dev/null 2>&1; then
-    echo -e "${RED}✗ docker-compose not found${NC}"
+if [ "${DOCKER_ENVIRONMENT:-}" = "main" ] && ! command -v docker  >/dev/null 2>&1; then
+    echo -e "${RED}✗ docker not found${NC}"
     exit 1
 fi
 
@@ -452,7 +452,7 @@ test_epp_endpoint() {
 # Start backend services (only for main Docker environment)
 if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
     echo -e "${YELLOW}Starting backend services...${NC}"
-    docker-compose -f "$DOCKER_COMPOSE_FILE" up -d >/dev/null 2>&1
+    docker compose -f "$DOCKER_COMPOSE_FILE" up -d >/dev/null 2>&1
 
     # Wait for backend services to be ready
     echo -e "${YELLOW}Waiting for backend services...${NC}"
@@ -613,8 +613,8 @@ echo ""
 # Display nginx log locations for troubleshooting:
 echo -e "${YELLOW}📋 Nginx Log Locations for troubleshooting:${NC}"
 if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
-    echo -e "  ${BLUE}Docker Environment:${NC} Use 'docker compose logs nginx' to view nginx logs"
-    echo -e "  ${BLUE}All Services:${NC}       Use 'docker compose logs' to view all container logs"
+    echo -e "  ${BLUE}Docker Environment:${NC} Use 'docker compose -f tests/docker-compose.yml logs nginx' to view nginx logs"
+    echo -e "  ${BLUE}All Services:${NC}       Use 'docker compose -f tests/docker-compose.ymllogs' to view all container logs"
 else
     echo -e "  ${BLUE}Access Log:${NC}  /tmp/nginx-ngx-inference-access.log"
     echo -e "  ${BLUE}Error Log:${NC}   /tmp/nginx-ngx-inference-error.log"
