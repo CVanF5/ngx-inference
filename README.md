@@ -105,12 +105,12 @@ flowchart TD
   A[Client Request] --> B[NGINX]
   subgraph NGINX Pod
     subgraph NGINX Container
-      B --1--> C[Inference Module<br/> with Body-Based Routing]
+      B --1. Request body --> C[Inference Module<br/> with Body-Based Routing]
     end
   end
-  C -- 2. gRPC headers --> D[EPP Service<br/>Endpoint Picker]
+  C -- 2. gRPC --> D[EPP Service<br/>Endpoint Picker]
   D -- 3. Endpoint Header --> C
-  C -- 4. Model Header --> B
+  C -- 4. $inference_upstream --> B
   B --5--> E[AI Workload Endpoint]
 ```
 
