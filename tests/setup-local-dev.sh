@@ -76,6 +76,11 @@ detect_os() {
     fi
 }
 
+# Check if OS is part of RedHat family
+is_rhel_family() {
+    [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" || "$OS" == "rocky" || "$OS" == "almalinux" ]]
+}
+
 detect_os
 
 # Common tools check
@@ -123,8 +128,8 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
             echo "  brew install nginx"
         elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
             echo "  sudo apt-get install nginx"
-        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
-            echo "  sudo yum install nginx"
+        elif is_rhel_family; then
+            echo "  sudo dnf install nginx"
         fi
         tools_missing=1
     fi
@@ -174,7 +179,7 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
             echo "  sudo apt-get install clang"
         elif [[ "$OS" == "alpine" ]]; then
             echo "  apk add clang-dev"
-        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+        elif is_rhel_family; then
             echo "  sudo dnf install clang"
         fi
         tools_missing=1
@@ -192,7 +197,7 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
             echo -e "${GREEN}✓ pcre2 found${NC}"
             pcre2_found=true
         fi
-    elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+    elif is_rhel_family; then
         if rpm -q pcre2-devel &>/dev/null; then
             echo -e "${GREEN}✓ pcre2-devel found${NC}"
             pcre2_found=true
@@ -207,7 +212,7 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
             echo "  sudo apt-get install libpcre2-dev"
         elif [[ "$OS" == "alpine" ]]; then
             echo "  apk add pcre2-dev"
-        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+        elif is_rhel_family; then
             echo "  sudo dnf install pcre2-devel"
         fi
         tools_missing=1
@@ -225,7 +230,7 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
             echo -e "${GREEN}✓ openssl found${NC}"
             openssl_found=true
         fi
-    elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+    elif is_rhel_family; then
         if rpm -q openssl-devel &>/dev/null; then
             echo -e "${GREEN}✓ openssl-devel found${NC}"
             openssl_found=true
@@ -240,7 +245,7 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
             echo "  sudo apt-get install libssl-dev"
         elif [[ "$OS" == "alpine" ]]; then
             echo "  apk add openssl-dev"
-        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+        elif is_rhel_family; then
             echo "  sudo dnf install openssl-devel"
         fi
         tools_missing=1
@@ -258,7 +263,7 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
             echo -e "${GREEN}✓ zlib found${NC}"
             zlib_found=true
         fi
-    elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+    elif is_rhel_family; then
         if rpm -q zlib-devel &>/dev/null; then
             echo -e "${GREEN}✓ zlib-devel found${NC}"
             zlib_found=true
@@ -273,7 +278,7 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
             echo "  sudo apt-get install zlib1g-dev"
         elif [[ "$OS" == "alpine" ]]; then
             echo "  apk add zlib-dev"
-        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+        elif is_rhel_family; then
             echo "  sudo dnf install zlib-devel"
         fi
         tools_missing=1
@@ -290,20 +295,10 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
             echo "  sudo apt-get install build-essential"
         elif [[ "$OS" == "alpine" ]]; then
             echo "  apk add make"
-        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+        elif is_rhel_family; then
             echo "  sudo dnf install make"
         fi
         tools_missing=1
-    fi
-
-    # Optional: Check pkg-config (helpful for finding libraries)
-    if command -v pkg-config >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ pkg-config found: $(pkg-config --version)${NC}"
-    else
-        echo -e "${YELLOW}⚠ pkg-config not found - optional but recommended${NC}"
-        if [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
-            echo "  sudo apt-get install pkg-config"
-        fi
     fi
 
 elif [[ "$ENVIRONMENT" == "docker" ]]; then
@@ -392,12 +387,23 @@ else
     echo "  Please install the missing tools and run this script again."
     echo ""
 
-    # Provide a quick install command for Debian/Ubuntu
-    if [[ "$ENVIRONMENT" == "local" && ("$OS" == "debian" || "$OS" == "ubuntu") ]]; then
-        echo -e "${YELLOW}Quick install for Debian/Ubuntu:${NC}"
-        echo "  sudo apt-get update"
-        echo "  sudo apt-get install -y clang libpcre2-dev libssl-dev zlib1g-dev build-essential pkg-config"
-        echo ""
+    # Provide quick install commands based on OS
+    if [[ "$ENVIRONMENT" == "local" ]]; then
+        if [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo -e "${YELLOW}Quick install for Debian/Ubuntu:${NC}"
+            echo "  sudo apt-get update"
+            echo "  sudo apt-get install -y clang libpcre2-dev libssl-dev zlib1g-dev build-essential nginx nodejs npm curl jq"
+            echo ""
+        elif is_rhel_family; then
+            echo -e "${YELLOW}Quick install for RedHat/CentOS/Fedora/Rocky/AlmaLinux:${NC}"
+            echo "  sudo dnf install -y clang pcre2-devel openssl-devel zlib-devel make gcc-c++ nginx nodejs npm curl jq"
+            echo ""
+            if [[ "$OS" == "rhel" || "$OS" == "centos" || "$OS" == "rocky" || "$OS" == "almalinux" ]]; then
+                echo -e "${YELLOW}Note: On RHEL/CentOS/Rocky/AlmaLinux, you may need to enable EPEL repository first:${NC}"
+                echo "  sudo dnf install -y epel-release"
+                echo ""
+            fi
+        fi
     fi
 
     echo "  You can also try the other environment:"

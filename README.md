@@ -15,6 +15,56 @@ Reference docs:
 - Module configuration: [docs/configuration.md](docs/configuration.md)
 - Example configurations: [docs/examples/README.md](docs/examples/README.md)
 
+
+Inference Module Architecture
+-------
+```mermaid
+flowchart TD
+  A[Client Request] --> B[NGINX]
+  subgraph NGINX Pod
+    subgraph NGINX Container
+      B --"(1) Request Body"--> C[Inference Module<br/> with Body-Based Routing]
+    end
+  end
+  C --"(2) gRPC (Request Headers)"--> D[EPP Service<br/>Endpoint Picker]
+  D --"(3) Endpoint Header"--> C
+  C --"(4) $inference_upstream"--> B
+  B --"(5)"--> E[AI Workload Endpoint]
+```
+NGINX configuration
+-------------------
+Example configuration snippet for a location using BBR followed by EPP:
+```nginx
+# Load the compiled module (Linux: .so path; macOS local build: .dylib)
+load_module /usr/lib/nginx/modules/libngx_inference.so;
+
+http {
+    server {
+        listen 8080;
+
+        # OpenAI-like API endpoint with both EPP and BBR
+        location /responses {
+            # Configure the inference module for direct BBR processing
+            inference_bbr on;
+            inference_bbr_max_body_size 52428800; # 50MB for AI workloads
+            inference_bbr_default_model "gpt-3.5-turbo"; # Default model when none found
+
+            # Configure the inference module for EPP (Endpoint Picker Processor)
+            inference_epp on;
+            inference_epp_endpoint "epp-server:9001"; # EPP service name
+            inference_epp_timeout_ms 5000;
+
+            # Proxy to the chosen upstream (will be determined by EPP)
+            # Use the $inference_upstream variable set by the module
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_pass http://$inference_upstream;
+        }
+    }
+}
+```
+
 Current behavior and defaults
 -----------------------------
 - BBR:
@@ -39,39 +89,7 @@ Current behavior and defaults
   - In fail-closed mode, BBR enforces size limits and may return `413 Request Entity Too Large` or `500 Internal Server Error` on processing errors; EPP failures return `502 Bad Gateway`.
   - In fail-open mode, processing continues without terminating the request.
 
-NGINX configuration
--------------------
-Example configuration snippet for a location using BBR followed by EPP:
-```nginx
-# Load the compiled module (Linux: .so path; macOS local build: .dylib)
-load_module /usr/lib/nginx/modules/libngx_inference.so;
 
-http {
-    server {
-        listen 8080;
-
-        # OpenAI-like API endpoint with both EPP and BBR
-        location /responses {
-            # Configure the inference module for direct BBR processing
-            inference_bbr on;
-            inference_bbr_max_body_size 52428800; # 50MB for AI workloads
-            inference_bbr_default_model "gpt-3.5-turbo"; # Default model when none found
-
-            # Configure the inference module for EPP (Endpoint Picker Processor)
-            inference_epp on;
-            inference_epp_endpoint "mock-epp:9001"; # Docker Compose service name (previously container_name extproc-epp)
-            inference_epp_timeout_ms 5000;
-
-            # Proxy to the chosen upstream (will be determined by EPP)
-            # Use the $inference_upstream variable set by the EPP module
-            proxy_set_header Host $host;
-            proxy_set_header X-Real-IP $remote_addr;
-            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-            proxy_pass http://$inference_upstream;
-        }
-    }
-}
-```
 
 Notes and assumptions
 ---------------------
@@ -97,22 +115,6 @@ Notes and assumptions
   - EPP implementation forwards incoming request headers per the Gateway API specification for endpoint selection context.
   - BBR implementation processes request bodies directly for model detection without external communication.
 
-
-Inference Module Architecture
--------
-```mermaid
-flowchart TD
-  A[Client Request] --> B[NGINX]
-  subgraph NGINX Pod
-    subgraph NGINX Container
-      B --"(1) Request Body"--> C[Inference Module<br/> with Body-Based Routing]
-    end
-  end
-  C --"(2) gRPC (Request Headers)"--> D[EPP Service<br/>Endpoint Picker]
-  D --"(3) Endpoint Header"--> C
-  C --"(4) $inference_upstream"--> B
-  B --"(5)"--> E[AI Workload Endpoint]
-```
 
 Testing
 -------
