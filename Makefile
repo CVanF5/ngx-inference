@@ -129,7 +129,7 @@ else
 	$(MAKE) test-docker
 endif
 
-test-docker:d
+test-docker:
 	docker compose -f $(DOCKER_COMPOSE_MAIN) up --build -d
 	DOCKER_ENVIRONMENT=main ./tests/test-config.sh
 
