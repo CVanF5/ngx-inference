@@ -94,13 +94,17 @@ deploy:
 
 start-local: build-check
 	@echo "Starting mock external processor..."
-	@pkill -f "extproc_mock" || true
-	@EPP_UPSTREAM=localhost:8080 MOCK_ROLE=EPP ./target/debug/extproc_mock 0.0.0.0:9001 &
+	@-kill $$(cat /tmp/extproc_mock.pid 2>/dev/null) 2>/dev/null || true
+	@rm -f /tmp/extproc_mock.pid
+	@(EPP_UPSTREAM=localhost:8080 MOCK_ROLE=EPP ./target/debug/extproc_mock 0.0.0.0:9001 >/dev/null 2>&1 & echo $$! > /tmp/extproc_mock.pid) || true
+	@sleep 1
 	@echo "Starting echo server..."
-	@pkill -f "custom-echo-server.js" || true
+	@-kill $$(cat /tmp/echo-server.pid 2>/dev/null) 2>/dev/null || true
+	@rm -f /tmp/echo-server.pid
 	@cd docker/echo-server && [ ! -f package.json ] && npm init -y >/dev/null 2>&1 || true
 	@cd docker/echo-server && [ ! -d node_modules ] && npm install express >/dev/null 2>&1 || true
-	@cd docker/echo-server && PORT=8080 node custom-echo-server.js &
+	@(cd docker/echo-server && PORT=8080 node custom-echo-server.js >/dev/null 2>&1 & echo $$! > /tmp/echo-server.pid) || true
+	@sleep 1
 
 setup-local:
 	./tests/setup-local-dev.sh --local
@@ -109,11 +113,11 @@ setup-docker:
 	./tests/setup-local-dev.sh --docker
 
 stop:
-	docker compose -f $(DOCKER_COMPOSE_MAIN) down --remove-orphans
-	# Stop local processes
+	@docker compose -f $(DOCKER_COMPOSE_MAIN) down --remove-orphans 2>/dev/null || true
 ifndef GITHUB_ACTIONS
-	pkill -f "custom-echo-server.js" 2>/dev/null || true
-	pkill -f "extproc_mock" 2>/dev/null || true
+	@-kill $$(cat /tmp/echo-server.pid 2>/dev/null) 2>/dev/null || true
+	@-kill $$(cat /tmp/extproc_mock.pid 2>/dev/null) 2>/dev/null || true
+	@rm -f /tmp/extproc_mock.pid /tmp/echo-server.pid 2>/dev/null || true
 endif
 
 
@@ -125,8 +129,7 @@ else
 	$(MAKE) test-docker
 endif
 
-test-docker:
-	@echo "Starting main docker services with build..."
+test-docker:d
 	docker compose -f $(DOCKER_COMPOSE_MAIN) up --build -d
 	DOCKER_ENVIRONMENT=main ./tests/test-config.sh
 

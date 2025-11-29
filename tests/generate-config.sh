@@ -88,11 +88,14 @@ fi
 if [[ "$ENVIRONMENT" == "local" ]]; then
     if [[ "$(uname)" == "Darwin" ]]; then
         MODULE_PATH="$PROJECT_ROOT/target/debug/libngx_inference.dylib"
+        MIMETYPES_PATH="/opt/homebrew/etc/nginx/mime.types"
     else
         MODULE_PATH="$PROJECT_ROOT/target/debug/libngx_inference.so"
+        MIMETYPES_PATH="/etc/nginx/mime.types"
     fi
 else
     MODULE_PATH="/usr/lib/nginx/modules/libngx_inference.so"
+    MIMETYPES_PATH="/etc/nginx/mime.types"
 fi
 
 # Validate template file exists
@@ -105,6 +108,7 @@ echo "Generating nginx configuration..."
 echo "  Environment: $ENVIRONMENT"
 echo "  Template: $TEMPLATE"
 echo "  Module path: $MODULE_PATH"
+echo "  Mime types path: $MIMETYPES_PATH"
 echo "  Output: $OUTPUT_FILE"
 
 # Create output directory if it doesn't exist
@@ -125,6 +129,7 @@ if [[ -n "$SERVER_CONFIG" ]]; then
     # Replace all placeholders
     sed -e "s|TEST_SERVER_CONFIG_PLACEHOLDER|${SERVER_CONFIG_FILE}|g" \
         -e "s|MODULE_PATH_PLACEHOLDER|${MODULE_PATH}|g" \
+        -e "s|MIMETYPES_PATH_PLACEHOLDER|${MIMETYPES_PATH}|g" \
         -e "s|RESOLVER_PLACEHOLDER|${RESOLVER}|g" \
         "$TEMPLATE" > "$OUTPUT_FILE"
 else
@@ -133,6 +138,7 @@ else
 
     # Just replace module and resolver placeholders
     sed -e "s|MODULE_PATH_PLACEHOLDER|${MODULE_PATH}|g" \
+        -e "s|MIMETYPES_PATH_PLACEHOLDER|${MIMETYPES_PATH}|g" \
         -e "s|RESOLVER_PLACEHOLDER|${RESOLVER}|g" \
         "$TEMPLATE" > "$OUTPUT_FILE"
 fi

@@ -143,15 +143,23 @@ create_config_from_template() {
     local module_path="$LOCAL_MODULE_PATH"
     local resolver="$CACHED_RESOLVER"
 
+    # Determine mime.types path based on OS
+    local mimetypes_path="/etc/nginx/mime.types"
+    if [[ "$(uname)" == "Darwin" ]]; then
+        mimetypes_path="/opt/homebrew/etc/nginx/mime.types"
+    fi
+
     if [[ -n "$server_config" ]]; then
         # Replace all placeholders
         sed -e "s|TEST_SERVER_CONFIG_PLACEHOLDER|${server_config}|g" \
             -e "s|MODULE_PATH_PLACEHOLDER|${module_path}|g" \
+            -e "s|MIMETYPES_PATH_PLACEHOLDER|${mimetypes_path}|g" \
             -e "s|RESOLVER_PLACEHOLDER|${resolver}|g" \
             "$template_file" > "$output_file"
     else
         # Replace module and resolver placeholders
         sed -e "s|MODULE_PATH_PLACEHOLDER|${module_path}|g" \
+            -e "s|MIMETYPES_PATH_PLACEHOLDER|${mimetypes_path}|g" \
             -e "s|RESOLVER_PLACEHOLDER|${resolver}|g" \
             "$template_file" > "$output_file"
     fi

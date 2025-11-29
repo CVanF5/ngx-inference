@@ -63,6 +63,21 @@ fi
 echo -e "${YELLOW}Setting up for ${ENVIRONMENT} development...${NC}"
 echo ""
 
+# Detect OS and package manager
+detect_os() {
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        OS=$ID
+        OS_VERSION=$VERSION_ID
+    elif [[ "$(uname)" == "Darwin" ]]; then
+        OS="macos"
+    else
+        OS="unknown"
+    fi
+}
+
+detect_os
+
 # Common tools check
 echo -e "${YELLOW}Checking common tools...${NC}"
 tools_missing=0
@@ -72,9 +87,9 @@ if command -v curl >/dev/null 2>&1; then
     echo -e "${GREEN}✓ curl found: $(curl --version | head -n1)${NC}"
 else
     echo -e "${RED}✗ curl not found - please install curl${NC}"
-    if [[ "$(uname)" == "Darwin" ]]; then
+    if [[ "$OS" == "macos" ]]; then
         echo "  brew install curl"
-    elif [[ "$(uname)" == "Linux" ]]; then
+    elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
         echo "  sudo apt-get install curl"
     fi
     tools_missing=1
@@ -85,9 +100,9 @@ if command -v jq >/dev/null 2>&1; then
     echo -e "${GREEN}✓ jq found: $(jq --version)${NC}"
 else
     echo -e "${RED}✗ jq not found - please install jq for JSON parsing${NC}"
-    if [[ "$(uname)" == "Darwin" ]]; then
+    if [[ "$OS" == "macos" ]]; then
         echo "  brew install jq"
-    elif [[ "$(uname)" == "Linux" ]]; then
+    elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
         echo "  sudo apt-get install jq"
     fi
     tools_missing=1
@@ -104,12 +119,11 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
         echo -e "${GREEN}✓ nginx found: $CURRENT_VERSION${NC}"
     else
         echo -e "${RED}✗ nginx not found - please install nginx${NC}"
-        if [[ "$(uname)" == "Darwin" ]]; then
+        if [[ "$OS" == "macos" ]]; then
             echo "  brew install nginx"
-        elif [[ "$(uname)" == "Linux" ]]; then
-            echo "  # Ubuntu/Debian:"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
             echo "  sudo apt-get install nginx"
-            echo "  # CentOS/RHEL:"
+        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
             echo "  sudo yum install nginx"
         fi
         tools_missing=1
@@ -120,14 +134,10 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
         echo -e "${GREEN}✓ node found: $(node --version)${NC}"
     else
         echo -e "${RED}✗ node not found - please install Node.js for echo server${NC}"
-        if [[ "$(uname)" == "Darwin" ]]; then
+        if [[ "$OS" == "macos" ]]; then
             echo "  brew install node"
-        elif [[ "$(uname)" == "Linux" ]]; then
-            echo "  # Ubuntu/Debian:"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
             echo "  sudo apt-get install nodejs npm"
-            echo "  # Or use NodeSource:"
-            echo "  curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -"
-            echo "  sudo apt-get install -y nodejs"
         fi
         tools_missing=1
     fi
@@ -148,6 +158,152 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
         echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
         echo "  source ~/.cargo/env"
         tools_missing=1
+    fi
+
+    echo ""
+    echo -e "${YELLOW}Checking Rust build dependencies...${NC}"
+
+    # Check clang/LLVM (required for bindgen)
+    if command -v clang >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ clang found: $(clang --version | head -n1)${NC}"
+    else
+        echo -e "${RED}✗ clang not found - required for Rust bindgen${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  xcode-select --install"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install clang"
+        elif [[ "$OS" == "alpine" ]]; then
+            echo "  apk add clang-dev"
+        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+            echo "  sudo dnf install clang"
+        fi
+        tools_missing=1
+    fi
+
+    # Check PCRE2 development files
+    pcre2_found=false
+    if [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+        if dpkg -l | grep -q libpcre2-dev; then
+            echo -e "${GREEN}✓ libpcre2-dev found${NC}"
+            pcre2_found=true
+        fi
+    elif [[ "$OS" == "macos" ]]; then
+        if brew list pcre2 &>/dev/null; then
+            echo -e "${GREEN}✓ pcre2 found${NC}"
+            pcre2_found=true
+        fi
+    elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+        if rpm -q pcre2-devel &>/dev/null; then
+            echo -e "${GREEN}✓ pcre2-devel found${NC}"
+            pcre2_found=true
+        fi
+    fi
+
+    if [[ "$pcre2_found" == "false" ]]; then
+        echo -e "${RED}✗ PCRE2 development files not found - required for nginx module build${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  brew install pcre2"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install libpcre2-dev"
+        elif [[ "$OS" == "alpine" ]]; then
+            echo "  apk add pcre2-dev"
+        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+            echo "  sudo dnf install pcre2-devel"
+        fi
+        tools_missing=1
+    fi
+
+    # Check OpenSSL development files
+    openssl_found=false
+    if [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+        if dpkg -l | grep -q libssl-dev; then
+            echo -e "${GREEN}✓ libssl-dev found${NC}"
+            openssl_found=true
+        fi
+    elif [[ "$OS" == "macos" ]]; then
+        if brew list openssl &>/dev/null; then
+            echo -e "${GREEN}✓ openssl found${NC}"
+            openssl_found=true
+        fi
+    elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+        if rpm -q openssl-devel &>/dev/null; then
+            echo -e "${GREEN}✓ openssl-devel found${NC}"
+            openssl_found=true
+        fi
+    fi
+
+    if [[ "$openssl_found" == "false" ]]; then
+        echo -e "${RED}✗ OpenSSL development files not found - required for nginx module build${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  brew install openssl"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install libssl-dev"
+        elif [[ "$OS" == "alpine" ]]; then
+            echo "  apk add openssl-dev"
+        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+            echo "  sudo dnf install openssl-devel"
+        fi
+        tools_missing=1
+    fi
+
+    # Check zlib development files
+    zlib_found=false
+    if [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+        if dpkg -l | grep -q zlib1g-dev; then
+            echo -e "${GREEN}✓ zlib1g-dev found${NC}"
+            zlib_found=true
+        fi
+    elif [[ "$OS" == "macos" ]]; then
+        if brew list zlib &>/dev/null; then
+            echo -e "${GREEN}✓ zlib found${NC}"
+            zlib_found=true
+        fi
+    elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+        if rpm -q zlib-devel &>/dev/null; then
+            echo -e "${GREEN}✓ zlib-devel found${NC}"
+            zlib_found=true
+        fi
+    fi
+
+    if [[ "$zlib_found" == "false" ]]; then
+        echo -e "${RED}✗ zlib development files not found - required for nginx gzip module${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  brew install zlib"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install zlib1g-dev"
+        elif [[ "$OS" == "alpine" ]]; then
+            echo "  apk add zlib-dev"
+        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+            echo "  sudo dnf install zlib-devel"
+        fi
+        tools_missing=1
+    fi
+
+    # Check make
+    if command -v make >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ make found: $(make --version | head -n1)${NC}"
+    else
+        echo -e "${RED}✗ make not found - required for nginx module build${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  xcode-select --install"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install build-essential"
+        elif [[ "$OS" == "alpine" ]]; then
+            echo "  apk add make"
+        elif [[ "$OS" == "centos" || "$OS" == "rhel" || "$OS" == "fedora" ]]; then
+            echo "  sudo dnf install make"
+        fi
+        tools_missing=1
+    fi
+
+    # Optional: Check pkg-config (helpful for finding libraries)
+    if command -v pkg-config >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ pkg-config found: $(pkg-config --version)${NC}"
+    else
+        echo -e "${YELLOW}⚠ pkg-config not found - optional but recommended${NC}"
+        if [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install pkg-config"
+        fi
     fi
 
 elif [[ "$ENVIRONMENT" == "docker" ]]; then
@@ -235,6 +391,15 @@ else
     echo -e "${RED}✗ Some required tools are missing for ${ENVIRONMENT} development${NC}"
     echo "  Please install the missing tools and run this script again."
     echo ""
+
+    # Provide a quick install command for Debian/Ubuntu
+    if [[ "$ENVIRONMENT" == "local" && ("$OS" == "debian" || "$OS" == "ubuntu") ]]; then
+        echo -e "${YELLOW}Quick install for Debian/Ubuntu:${NC}"
+        echo "  sudo apt-get update"
+        echo "  sudo apt-get install -y clang libpcre2-dev libssl-dev zlib1g-dev build-essential pkg-config"
+        echo ""
+    fi
+
     echo "  You can also try the other environment:"
     if [[ "$ENVIRONMENT" == "local" ]]; then
         echo "    $0 --docker    # Setup for Docker-based testing"
