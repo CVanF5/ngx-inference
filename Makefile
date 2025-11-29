@@ -115,6 +115,10 @@ setup-docker:
 stop:
 	@docker compose -f $(DOCKER_COMPOSE_MAIN) down --remove-orphans 2>/dev/null || true
 ifndef GITHUB_ACTIONS
+	@# Stop nginx if running
+	@-[ -f $(PID_FILE) ] && kill -TERM $$(cat $(PID_FILE)) 2>/dev/null || true
+	@-[ -f $(PID_FILE) ] && rm -f $(PID_FILE) 2>/dev/null || true
+	@# Stop backend services
 	@-kill $$(cat /tmp/echo-server.pid 2>/dev/null) 2>/dev/null || true
 	@-kill $$(cat /tmp/extproc_mock.pid 2>/dev/null) 2>/dev/null || true
 	@rm -f /tmp/extproc_mock.pid /tmp/echo-server.pid 2>/dev/null || true
@@ -130,10 +134,12 @@ else
 endif
 
 test-docker:
+	@echo "Building module for NGINX version: $$(grep 'FROM nginx:' docker/nginx/Dockerfile | head -1 | sed 's/.*nginx://' | sed 's/-.*//')"
 	docker compose -f $(DOCKER_COMPOSE_MAIN) up --build -d
 	DOCKER_ENVIRONMENT=main ./tests/test-config.sh
 
 test-local: start-local
+	@echo "Building module for NGINX version: $$(nginx -v 2>&1 | sed 's|nginx version: nginx/||')"
 	./tests/test-config.sh
 
 # Configuration generation

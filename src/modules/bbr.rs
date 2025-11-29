@@ -229,9 +229,8 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
         // Using default model is normal behavior - no logging needed
     }
 
-    // Body processing complete - continue request phases
-    // Mark body as processed and continue with next phases
-    (*r).phase_handler += 1;
+    // Body processing complete - resume NGINX phase processing
+    // We must call ngx_http_core_run_phases(r) to continue after async body reading
     ngx::ffi::ngx_http_core_run_phases(r);
 }
 
