@@ -34,7 +34,7 @@ fn cstr_ptr(s: *const u8) -> *const c_char {
 #[cfg(not(target_os = "macos"))]
 #[inline]
 fn cstr_ptr(s: *const u8) -> *const c_char {
-    s as *const u8 as *const c_char
+    s as *const c_char
 }
 
 // NGINX module for Gateway API inference extensions.
