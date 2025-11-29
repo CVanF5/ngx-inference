@@ -5,17 +5,30 @@ This directory contains Docker configurations for the ngx-inference module and r
 ## Directory Structure
 
 - `nginx/` - NGINX configurations and Dockerfile for the main inference gateway
-- `extproc/` - External processor service for EPP (Endpoint Picker Processor)
-- `examples/` - Example services and configurations for testing
+- `mock-extproc/` - Mock external processor service implementing EPP (Endpoint Picker Processor) and BBR functionality
+- `echo-server/` - Simple Node.js echo server for testing
 
 ## Quick Start
 
 ### Build and Run with Docker Compose
 
+The docker-compose configuration is located in the `tests/` directory:
+
 ```bash
 # From the project root
+docker-compose -f tests/docker-compose.yml up -d
+
+# Or run from the tests directory
+cd tests
 docker-compose up -d
 ```
+
+Access the stack:
+- Basic test: `curl -i http://localhost:8081/`
+- EPP test: `curl -i http://localhost:8081/epp-test`
+- BBR test: `curl -i http://localhost:8081/bbr-test -H 'Content-Type: application/json' --data '{"model":"claude-4","input": "Why is the sky blue"}'`
+- BBR & EPP test: `curl -i http://localhost:8081/responses -H 'Content-Type: application/json' --data '{"model":"claude-4","input": "Why is the sky blue"}'`
+- Health check: `curl -i http://localhost:8081/health`
 
 ### Build Individual Services
 
@@ -23,11 +36,11 @@ docker-compose up -d
 # Build NGINX with ngx-inference module
 docker build -f docker/nginx/Dockerfile -t ngx-inference:latest .
 
-# Build external processor service
-docker build -f docker/extproc/Dockerfile -t extproc-service:latest .
+# Build mock external processor service
+docker build -f docker/mock-extproc/Dockerfile -t extproc-mock:latest .
 
-# Build example echo server
-docker build -f docker/examples/custom-echo.Dockerfile -t echo-server:latest docker/examples/
+# Build echo server
+docker build -f docker/echo-server/Dockerfile -t echo-server:latest docker/echo-server/
 ```
 
 ## NGINX Container
@@ -39,71 +52,64 @@ The `nginx/` directory contains:
 ### Usage
 
 ```bash
-docker run -p 80:80 \
-  -v ./examples/basic-config/nginx.conf:/etc/nginx/nginx.conf:ro \
+docker run -p 8081:80 \
+  -v ./docker/nginx/nginx-test.conf:/etc/nginx/nginx.conf:ro \
   ngx-inference:latest
 ```
 
-## External Processor
+## Mock External Processor
 
-The `extproc/` directory contains the external processor service that implements the EPP (Endpoint Picker Processor) functionality via gRPC.
+The `mock-extproc/` directory contains the mock external processor service that implements both EPP (Endpoint Picker Processor) and BBR (Body Buffer & Rewrite) functionality via gRPC. It uses the `extproc_mock` binary from this repository.
 
 ### Usage
 
 ```bash
-docker run -p 9001:9001 extproc-service:latest
+# Run as EPP (Endpoint Picker Processor) on port 9001
+docker run -p 9001:9001 \
+  -e EPP_UPSTREAM=echo-server:80 \
+  extproc-mock:latest
+
+# Run as BBR on port 9000
+docker run -p 9000:9000 \
+  -e BBR_MODEL=bbr-chosen-model \
+  extproc-mock:latest \
+  extproc_mock 0.0.0.0:9000
 ```
 
-## Examples
+## Echo Server
 
-The `examples/` directory contains sample services for testing:
-- `custom-echo-server.js` - Simple Node.js echo server for testing
-- `custom-echo.Dockerfile` - Dockerfile for the echo server
+The `echo-server/` directory contains a simple Node.js echo server for testing with a 50MB payload limit:
+- `custom-echo-server.js` - Simple Node.js echo server implementation
+- `Dockerfile` - Dockerfile for the echo server
+- `package.json` - Node.js dependencies
 
 ## Environment Variables
 
 ### NGINX Container
 
-- `NGINX_WORKER_PROCESSES` - Number of worker processes (default: auto)
-- `NGINX_WORKER_CONNECTIONS` - Worker connections (default: 1024)
+The NGINX container uses an official NGINX image with the ngx-inference module dynamically loaded. Configuration is provided via volume-mounted nginx.conf files.
 
-### External Processor
+### Mock External Processor
 
-- `GRPC_PORT` - gRPC server port (default: 9001)
-- `LOG_LEVEL` - Logging level (default: info)
+- `EPP_UPSTREAM` - Upstream endpoint for EPP routing (default: echo-server:80)
+- `BBR_MODEL` - Model identifier for BBR responses (default: bbr-chosen-model)
+- `MOCK_ROLE` - Role identifier (e.g., EPP, BBR)
+
+### Echo Server
+
+- `PORT` - Server listening port (default: 80)
 
 ## Development
 
-For development and testing, you can use the provided docker-compose configuration:
+For development and testing, use the docker-compose configuration in the `tests/` directory. The stack includes:
 
-```yaml
-# In your docker-compose.yml
-version: '3.8'
-services:
-  nginx:
-    build:
-      context: .
-      dockerfile: docker/nginx/Dockerfile
-    ports:
-      - "80:80"
-    volumes:
-      - ./examples/basic-config/nginx.conf:/etc/nginx/nginx.conf:ro
-    depends_on:
-      - extproc
-      - echo-server
+- **nginx**: NGINX with ngx-inference module (exposed on port 8081)
+- **mock-epp**: Mock external processor for EPP on port 9001
+- **echo-server**: Simple echo server for testing (internal only, accessed via nginx)
 
-  extproc:
-    build:
-      context: .
-      dockerfile: docker/extproc/Dockerfile
-    environment:
-      - GRPC_PORT=9001
+All services share the default network allowing DNS resolution by service name.
 
-  echo-server:
-    build:
-      context: docker/examples
-      dockerfile: custom-echo.Dockerfile
-```
+See `tests/docker-compose.yml` for the complete configuration.
 
 ## Troubleshooting
 
