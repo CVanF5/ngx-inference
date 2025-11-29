@@ -622,7 +622,6 @@ echo ""
 echo -e "${YELLOW}📋 Nginx Log Locations for troubleshooting:${NC}"
 echo -e "  ${BLUE}Access Log:${NC}  /tmp/nginx-ngx-inference-access.log"
 echo -e "  ${BLUE}Error Log:${NC}   /tmp/nginx-ngx-inference-error.log"
-echo -e "  ${BLUE}Debug Log:${NC}   /tmp/nginx-ngx-inference-debug.log"
 echo ""
 
 if [[ $all_passed -eq 1 ]]; then
