@@ -12,10 +12,12 @@ pub struct ModuleConfig {
 
     // EPP (Endpoint Picker Processor)
     pub epp_enable: bool,
-    pub epp_endpoint: Option<String>, // host:port
+    pub epp_endpoint: Option<String>, // host:port or https://host:port
     pub epp_timeout_ms: u64,
     pub epp_failure_mode_allow: bool, // fail-open
     pub epp_header_name: String,      // default "X-Inference-Upstream"
+    pub epp_tls: bool,                // use TLS for connection
+    pub epp_tls_insecure: bool,       // allow untrusted TLS certificates (for testing/debug)
 }
 
 impl Default for ModuleConfig {
@@ -32,6 +34,8 @@ impl Default for ModuleConfig {
             epp_timeout_ms: 200,
             epp_failure_mode_allow: false,
             epp_header_name: "X-Inference-Upstream".to_string(),
+            epp_tls: false,
+            epp_tls_insecure: false,
         }
     }
 }
@@ -94,6 +98,12 @@ impl ngx::http::Merge for ModuleConfig {
         }
         if prev.epp_failure_mode_allow {
             self.epp_failure_mode_allow = true;
+        }
+        if prev.epp_tls {
+            self.epp_tls = true;
+        }
+        if prev.epp_tls_insecure {
+            self.epp_tls_insecure = true;
         }
 
         Ok(())

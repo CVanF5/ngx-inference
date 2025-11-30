@@ -373,8 +373,74 @@ extern "C" fn ngx_http_inference_set_epp_header_name(
     core::NGX_CONF_OK
 }
 
+// inference_epp_tls on|off
+extern "C" fn ngx_http_inference_set_epp_tls(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+
+        let val = match args[1].to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp_tls` argument is not utf-8");
+                return core::NGX_CONF_ERROR;
+            }
+        };
+
+        match set_on_off(val) {
+            Some(b) => conf.epp_tls = b,
+            None => {
+                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp_tls` expects on|off");
+                return core::NGX_CONF_ERROR;
+            }
+        }
+    }
+    core::NGX_CONF_OK
+}
+
+// inference_epp_tls_insecure on|off
+extern "C" fn ngx_http_inference_set_epp_tls_insecure(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+
+        let val = match args[1].to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                ngx_conf_log_error!(
+                    NGX_LOG_EMERG,
+                    cf,
+                    "`inference_epp_tls_insecure` argument is not utf-8"
+                );
+                return core::NGX_CONF_ERROR;
+            }
+        };
+
+        match set_on_off(val) {
+            Some(b) => conf.epp_tls_insecure = b,
+            None => {
+                ngx_conf_log_error!(
+                    NGX_LOG_EMERG,
+                    cf,
+                    "`inference_epp_tls_insecure` expects on|off"
+                );
+                return core::NGX_CONF_ERROR;
+            }
+        }
+    }
+    core::NGX_CONF_OK
+}
+
 // NGINX directives table
-static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
+static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 13] = [
     ngx_command_t {
         name: ngx_string!("inference_bbr"),
         type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
@@ -461,6 +527,24 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 11] = [
         type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
             as ngx_uint_t,
         set: Some(ngx_http_inference_set_epp_header_name),
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("inference_epp_tls"),
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
+        set: Some(ngx_http_inference_set_epp_tls),
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("inference_epp_tls_insecure"),
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
+        set: Some(ngx_http_inference_set_epp_tls_insecure),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),

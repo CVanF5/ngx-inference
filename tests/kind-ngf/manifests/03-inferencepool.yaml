@@ -1,0 +1,17 @@
+# InferencePool configuration for reference EPP testing with vLLM
+# This configures the Gateway API Inference Extension's reference EPP
+# Following the pattern: helm install vllm-llama3-8b-instruct 
+#   --set inferencePool.modelServers.matchLabels.app=vllm-llama3-8b-instruct
+apiVersion: gateway.networking.k8s.io/v1alpha1
+kind: InferencePool
+metadata:
+  name: vllm-llama3-8b-instruct
+  namespace: ngx-inference-test
+spec:
+  # Match backend pods with this label
+  modelServers:
+    matchLabels:
+      app: vllm-llama3-8b-instruct
+  # Provider configuration for the reference EPP
+  provider:
+    name: reference-epp

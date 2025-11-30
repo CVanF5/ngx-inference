@@ -51,6 +51,8 @@ impl EppProcessor {
             conf.epp_timeout_ms,
             upstream_header_str,
             hdrs,
+            conf.epp_tls,
+            conf.epp_tls_insecure,
         ) {
             Ok(Some(val)) => {
                 // Write upstream selection header for variable consumption.

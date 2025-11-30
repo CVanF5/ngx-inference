@@ -1,0 +1,22 @@
+# Kind cluster configuration for NGINX Gateway Fabric testing
+# Creates a single-node cluster with necessary port mappings
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: ngx-inference-test
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      # Map host port 8080 to NodePort 80 for testing
+      - containerPort: 80
+        hostPort: 8080
+        protocol: TCP
+      # Map host port 8443 to NodePort 443 for HTTPS testing
+      - containerPort: 443
+        hostPort: 8443
+        protocol: TCP
