@@ -140,28 +140,55 @@ create_config_from_template() {
     local output_file="$2"
     local server_config="${3:-}"
 
-    local module_path="$LOCAL_MODULE_PATH"
-    local resolver="$CACHED_RESOLVER"
-
-    # Determine mime.types path based on OS
-    local mimetypes_path="/etc/nginx/mime.types"
-    if [[ "$(uname)" == "Darwin" ]]; then
-        mimetypes_path="/opt/homebrew/etc/nginx/mime.types"
-    fi
-
     if [[ -n "$server_config" ]]; then
-        # Replace all placeholders
-        sed -e "s|TEST_SERVER_CONFIG_PLACEHOLDER|${server_config}|g" \
-            -e "s|MODULE_PATH_PLACEHOLDER|${module_path}|g" \
-            -e "s|MIMETYPES_PATH_PLACEHOLDER|${mimetypes_path}|g" \
-            -e "s|RESOLVER_PLACEHOLDER|${resolver}|g" \
-            "$template_file" > "$output_file"
+        # Extract just the config name from the path (e.g., bbr_on_epp_off from /path/to/bbr_on_epp_off.conf)
+        local config_name=$(basename "$server_config" .conf)
+
+        # Use generate-config.sh for proper environment-specific configuration
+        local generate_script="$(pwd)/tests/generate-config.sh"
+        if [[ -f "$generate_script" ]]; then
+            # Use the generate-config.sh script which handles TLS and endpoints properly
+            "$generate_script" -e local -o "$output_file" -s "$config_name"
+        else
+            echo -e "${YELLOW}Warning: generate-config.sh not found, falling back to manual template replacement${NC}"
+            # Fallback to manual replacement if generate-config.sh is missing
+            local module_path="$LOCAL_MODULE_PATH"
+            local resolver="$CACHED_RESOLVER"
+
+            # Determine mime.types path based on OS
+            local mimetypes_path="/etc/nginx/mime.types"
+            if [[ "$(uname)" == "Darwin" ]]; then
+                mimetypes_path="/opt/homebrew/etc/nginx/mime.types"
+            fi
+
+            sed -e "s|TEST_SERVER_CONFIG_PLACEHOLDER|${server_config}|g" \
+                -e "s|MODULE_PATH_PLACEHOLDER|${module_path}|g" \
+                -e "s|MIMETYPES_PATH_PLACEHOLDER|${mimetypes_path}|g" \
+                -e "s|RESOLVER_PLACEHOLDER|${resolver}|g" \
+                "$template_file" > "$output_file"
+        fi
     else
-        # Replace module and resolver placeholders
-        sed -e "s|MODULE_PATH_PLACEHOLDER|${module_path}|g" \
-            -e "s|MIMETYPES_PATH_PLACEHOLDER|${mimetypes_path}|g" \
-            -e "s|RESOLVER_PLACEHOLDER|${resolver}|g" \
-            "$template_file" > "$output_file"
+        # For template-only generation (no server config), use generate-config.sh without -s option
+        local generate_script="$(pwd)/tests/generate-config.sh"
+        if [[ -f "$generate_script" ]]; then
+            "$generate_script" -e local -o "$output_file"
+        else
+            echo -e "${YELLOW}Warning: generate-config.sh not found, falling back to manual template replacement${NC}"
+            # Fallback to manual replacement
+            local module_path="$LOCAL_MODULE_PATH"
+            local resolver="$CACHED_RESOLVER"
+
+            # Determine mime.types path based on OS
+            local mimetypes_path="/etc/nginx/mime.types"
+            if [[ "$(uname)" == "Darwin" ]]; then
+                mimetypes_path="/opt/homebrew/etc/nginx/mime.types"
+            fi
+
+            sed -e "s|MODULE_PATH_PLACEHOLDER|${module_path}|g" \
+                -e "s|MIMETYPES_PATH_PLACEHOLDER|${mimetypes_path}|g" \
+                -e "s|RESOLVER_PLACEHOLDER|${resolver}|g" \
+                "$template_file" > "$output_file"
+        fi
     fi
 }
 
@@ -325,7 +352,7 @@ test_bbr_large_body() {
     local tmp_dir=$(mktemp -d)
     local tests_passed=0
     local tests_total=2
-    
+
     # Ensure cleanup on function exit
     trap "rm -rf '$tmp_dir'" RETURN
 

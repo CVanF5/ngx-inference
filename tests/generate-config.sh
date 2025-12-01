@@ -153,8 +153,8 @@ if [[ -n "$SERVER_CONFIG" ]]; then
         # In Kubernetes, use the kube-dns service IP
         RESOLVER="10.96.0.10"
     else
-        # For local/docker, use system resolver
-        RESOLVER=$(grep -m1 '^nameserver' /etc/resolv.conf | awk '{print $2}' || echo "8.8.8.8")
+        # For local/docker, use system resolver, filtering out invalid IPv6 addresses
+        RESOLVER=$(grep '^nameserver' /etc/resolv.conf | grep -v '^nameserver fe80::' | awk '{print $2}' | head -1 || echo "8.8.8.8")
     fi
 
     # Read server config and replace localhost references with environment-specific hosts
@@ -164,17 +164,26 @@ if [[ -n "$SERVER_CONFIG" ]]; then
         sed "s|\"localhost:9001\"|\"$EPP_HOST\"|g" | \
         sed "s|\"127.0.0.1:9001\"|\"$EPP_HOST\"|g" | \
         sed "s|\"mock-extproc:9001\"|\"$EPP_HOST\"|g" | \
+        sed "s|\"vllm-llama3-8b-instruct-epp:9002\"|\"$EPP_HOST\"|g" | \
         sed "s|localhost:9001|$EPP_HOST|g" | \
         sed "s|127.0.0.1:9001|$EPP_HOST|g" | \
         sed "s|mock-extproc:9001|$EPP_HOST|g")
-    
+
+    # For local environment, disable TLS and remove CA file directive
+    if [[ "$ENVIRONMENT" == "local" ]]; then
+        SERVER_CONFIG_CONTENT=$(echo "$SERVER_CONFIG_CONTENT" | \
+            sed "s|inference_epp_tls on;|inference_epp_tls off;|g" | \
+            sed "/inference_epp_ca_file/d" | \
+            sed 's|inference_epp_header_name "x-gateway-destination-endpoint";|inference_epp_header_name "x-inference-upstream";|g')
+    fi
+
     # Create temporary files
     TMP_SERVER_CONFIG=$(mktemp)
     TMP_OUTPUT=$(mktemp)
-    
+
     # Write the processed server config to temp file
     echo "$SERVER_CONFIG_CONTENT" > "$TMP_SERVER_CONFIG"
-    
+
     # Replace module, resolver, and log placeholders first
     sed -e "s|MODULE_PATH_PLACEHOLDER|${MODULE_PATH}|g" \
         -e "s|MIMETYPES_PATH_PLACEHOLDER|${MIMETYPES_PATH}|g" \
@@ -182,7 +191,7 @@ if [[ -n "$SERVER_CONFIG" ]]; then
         -e "s|ERROR_LOG_PLACEHOLDER|${ERROR_LOG}|g" \
         -e "s|ACCESS_LOG_PLACEHOLDER|${ACCESS_LOG}|g" \
         "$TEMPLATE" > "$TMP_OUTPUT"
-    
+
     # Now replace the include directive with the actual server config content using awk
     awk -v server_config="$TMP_SERVER_CONFIG" '
         /include TEST_SERVER_CONFIG_PLACEHOLDER;/ {
@@ -194,12 +203,12 @@ if [[ -n "$SERVER_CONFIG" ]]; then
         }
         { print }
     ' "$TMP_OUTPUT" > "$OUTPUT_FILE"
-    
+
     # Clean up temp files
     rm -f "$TMP_SERVER_CONFIG" "$TMP_OUTPUT"
 else
-    # Get the first nameserver from /etc/resolv.conf
-    RESOLVER=$(grep -m1 '^nameserver' /etc/resolv.conf | awk '{print $2}' || echo "8.8.8.8")
+    # Get the first valid nameserver from /etc/resolv.conf, filtering out invalid IPv6 addresses
+    RESOLVER=$(grep '^nameserver' /etc/resolv.conf | grep -v '^nameserver fe80::' | awk '{print $2}' | head -1 || echo "8.8.8.8")
 
     # Just replace module, resolver, and log placeholders
     sed -e "s|MODULE_PATH_PLACEHOLDER|${MODULE_PATH}|g" \

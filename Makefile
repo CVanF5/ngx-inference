@@ -192,25 +192,33 @@ lint:
 	@cargo fmt --all -- --check || (echo "❌ Code formatting issues found. Run 'cargo fmt --all' to fix." && exit 1)
 	@echo "Running Clippy linter..."
 	@cargo clippy --all-targets --all-features -- -D warnings -A clippy::doc-lazy-continuation -A clippy::enum-variant-names || (echo "❌ Clippy issues found." && exit 1)
-	@echo "Checking for trailing whitespace..."
-	@if find src/ -name '*.rs' -exec grep -l '[[:space:]]$$' {} \; 2>/dev/null | head -20 | grep -q .; then \
+	@echo "Checking for whitespace issues using git..."
+	@if git diff --check 2>/dev/null; then \
+		echo "✅ No whitespace issues found by git"; \
+	else \
+		echo "❌ Whitespace issues found. See above for details."; \
+		echo "Run 'git diff --check' to see all whitespace issues."; \
+		exit 1; \
+	fi
+	@echo "Checking for trailing whitespace in source files..."
+	@if find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -l '[[:space:]]$$' 2>/dev/null | head -20 | grep -q .; then \
 		echo "❌ Trailing whitespace found in source files:"; \
-		find src/ -name '*.rs' -exec grep -Hn '[[:space:]]$$' {} \; 2>/dev/null | head -20; \
-		echo "Run the following to fix: find src/ -name '*.rs' -exec sed -i '' 's/[[:space:]]*$$//' {} \\;"; \
+		find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -Hn '[[:space:]]$$' 2>/dev/null | head -20; \
+		echo "Run the following to fix: find src/ tests/ \\( -name '*.rs' -o -name '*.sh' \\) -exec sed -i '' 's/[[:space:]]*$$//' {} \\;"; \
 		exit 1; \
 	fi
 	@echo "Checking for tabs instead of spaces..."
-	@if find src/ -name '*.rs' -exec grep -l $$'\t' {} \; 2>/dev/null | head -10 | grep -q .; then \
+	@if find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -l $$'\t' 2>/dev/null | head -10 | grep -q .; then \
 		echo "❌ Tab characters found in source files:"; \
-		find src/ -name '*.rs' -exec grep -Hn $$'\t' {} \; 2>/dev/null | head -10; \
+		find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -Hn $$'\t' 2>/dev/null | head -10; \
 		echo "Please use spaces for indentation."; \
 		exit 1; \
 	fi
 	@echo "Checking for Windows line endings..."
-	@if find src/ -name '*.rs' -exec grep -l $$'\r' {} \; 2>/dev/null | grep -q .; then \
+	@if find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -l $$'\r' 2>/dev/null | grep -q .; then \
 		echo "❌ Windows line endings (CRLF) found in source files:"; \
-		find src/ -name '*.rs' -exec grep -l $$'\r' {} \; 2>/dev/null; \
-		echo "Run the following to fix: find src/ -name '*.rs' -exec dos2unix {} \\;"; \
+		find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -l $$'\r' 2>/dev/null; \
+		echo "Run the following to fix: find src/ tests/ \\( -name '*.rs' -o -name '*.sh' \\) -exec dos2unix {} \\;"; \
 		exit 1; \
 	fi
 	@echo "✅ All linting checks passed!"
