@@ -214,7 +214,7 @@ run_test_for_scenario() {
         fi
     fi
     
-    # Test EPP if enabled
+    # Test EPP if enabled, or test expected failure if disabled
     if [ "$expected_epp" = "enabled" ]; then
         echo "  Testing EPP endpoint..."
         
@@ -246,6 +246,95 @@ run_test_for_scenario() {
             ((failed++))
         else
             echo -e "${YELLOW}  ⚠ EPP endpoint: HTTP $http_code${NC}"
+            echo -e "${YELLOW}  Response body: $body${NC}"
+        fi
+    else
+        # EPP is disabled - test that EPP endpoint works (should use $backend, not $inference_upstream)
+        echo "  Testing EPP endpoint (EPP disabled - should use backend)..."
+        
+        local response=$(curl -s http://localhost:8081/epp-test \
+            -H 'Content-Type: application/json' \
+            --data '{"prompt":"test"}' \
+            -w "HTTPSTATUS:%{http_code}")
+        
+        local http_code=$(echo "$response" | grep -o 'HTTPSTATUS:[0-9]*' | cut -d: -f2)
+        local body=$(echo "$response" | sed 's/HTTPSTATUS:[0-9]*$//')
+        
+        if [ "$http_code" = "200" ]; then
+            echo -e "${GREEN}  ✓ EPP endpoint with EPP disabled responded: HTTP $http_code${NC}"
+        elif [ "$http_code" = "500" ] || [ "$http_code" = "502" ] || [ "$http_code" = "503" ] || [ "$http_code" = "504" ]; then
+            echo -e "${RED}  ✗ EPP endpoint failed (EPP disabled): HTTP $http_code${NC}"
+            echo -e "${RED}  Response body: $body${NC}"
+            echo -e "${YELLOW}  Note: This could be expected if config uses \$inference_upstream when EPP is off${NC}"
+            # Don't increment failed here - this is an expected failure case
+        else
+            echo -e "${YELLOW}  ⚠ EPP endpoint (EPP disabled): HTTP $http_code${NC}"
+            echo -e "${YELLOW}  Response body: $body${NC}"
+        fi
+    fi
+    
+    # Test for configurations that use $inference_upstream when EPP is disabled (expected failures)
+    if [ "$expected_epp" = "disabled" ]; then
+        echo "  Testing /responses endpoint (EPP disabled - should use \$backend)..."
+        
+        local response=$(curl -s http://localhost:8081/responses \
+            -H 'Content-Type: application/json' \
+            --data '{"prompt":"test"}' \
+            -w "HTTPSTATUS:%{http_code}")
+        
+        local http_code=$(echo "$response" | grep -o 'HTTPSTATUS:[0-9]*' | cut -d: -f2)
+        local body=$(echo "$response" | sed 's/HTTPSTATUS:[0-9]*$//')
+        
+        # Show logs for debugging
+        if [ -n "$nginx_pod" ]; then
+            echo -e "${BLUE}  NGINX logs after /responses request (EPP disabled):${NC}"
+            kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=10 2>/dev/null | sed 's/^/    /' || true
+        fi
+        
+        # When EPP is disabled, /responses should use $backend and work correctly
+        if [ "$http_code" = "200" ]; then
+            echo -e "${GREEN}  ✓ /responses endpoint responded correctly (using \$backend): HTTP $http_code${NC}"
+        elif [ "$http_code" = "500" ] || [ "$http_code" = "502" ] || [ "$http_code" = "503" ] || [ "$http_code" = "504" ]; then
+            # Check if this is due to incorrectly using $inference_upstream 
+            if echo "$body" | grep -q "inference_upstream" || kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=20 2>/dev/null | grep -q "inference_upstream"; then
+                echo -e "${RED}  ✗ CONFIGURATION ERROR: /responses endpoint uses \$inference_upstream when EPP is disabled${NC}"
+                echo -e "${RED}  Response: HTTP $http_code - $body${NC}"
+                ((failed++))
+            else
+                echo -e "${RED}  ✗ /responses endpoint failed unexpectedly: HTTP $http_code${NC}"
+                echo -e "${RED}  Response body: $body${NC}"
+                ((failed++))
+            fi
+        else
+            echo -e "${YELLOW}  ⚠ /responses endpoint (EPP disabled): HTTP $http_code${NC}"
+            echo -e "${YELLOW}  Response body: $body${NC}"
+        fi
+    else
+        # When EPP is enabled, test that /responses endpoint can use $inference_upstream
+        echo "  Testing /responses endpoint (EPP enabled - should use \$inference_upstream)..."
+        
+        local response=$(curl -s http://localhost:8081/responses \
+            -H 'Content-Type: application/json' \
+            --data '{"prompt":"test"}' \
+            -w "HTTPSTATUS:%{http_code}")
+        
+        local http_code=$(echo "$response" | grep -o 'HTTPSTATUS:[0-9]*' | cut -d: -f2)
+        local body=$(echo "$response" | sed 's/HTTPSTATUS:[0-9]*$//')
+        
+        # Show logs for debugging
+        if [ -n "$nginx_pod" ]; then
+            echo -e "${BLUE}  NGINX logs after /responses request (EPP enabled):${NC}"
+            kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=10 2>/dev/null | sed 's/^/    /' || true
+        fi
+        
+        if [ "$http_code" = "200" ]; then
+            echo -e "${GREEN}  ✓ /responses endpoint responded: HTTP $http_code${NC}"
+        elif [ "$http_code" = "500" ] || [ "$http_code" = "502" ] || [ "$http_code" = "503" ] || [ "$http_code" = "504" ]; then
+            echo -e "${RED}  ✗ /responses endpoint failed: HTTP $http_code${NC}"
+            echo -e "${RED}  Response body: $body${NC}"
+            ((failed++))
+        else
+            echo -e "${YELLOW}  ⚠ /responses endpoint: HTTP $http_code${NC}"
             echo -e "${YELLOW}  Response body: $body${NC}"
         fi
     fi
