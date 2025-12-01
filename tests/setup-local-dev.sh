@@ -94,9 +94,9 @@ tools_missing=0
 
 # Check curl
 if command -v curl >/dev/null 2>&1; then
-    echo -e "${GREEN}✓ curl found: $(curl --version | head -n1)${NC}"
+    echo -e "${GREEN} curl found: $(curl --version | head -n1)${NC}"
 else
-    echo -e "${RED}✗ curl not found - please install curl${NC}"
+    echo -e "${RED} curl not found - please install curl${NC}"
     if [[ "$OS" == "macos" ]]; then
         echo "  brew install curl"
     elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
@@ -107,9 +107,9 @@ fi
 
 # Check jq
 if command -v jq >/dev/null 2>&1; then
-    echo -e "${GREEN}✓ jq found: $(jq --version)${NC}"
+    echo -e "${GREEN} jq found: $(jq --version)${NC}"
 else
-    echo -e "${RED}✗ jq not found - please install jq for JSON parsing${NC}"
+    echo -e "${RED} jq not found - please install jq for JSON parsing${NC}"
     if [[ "$OS" == "macos" ]]; then
         echo "  brew install jq"
     elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
@@ -126,9 +126,9 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
     # Check nginx
     if command -v nginx >/dev/null 2>&1; then
         CURRENT_VERSION=$(nginx -v 2>&1 | sed 's/nginx version: nginx\///')
-        echo -e "${GREEN}✓ nginx found: $CURRENT_VERSION${NC}"
+        echo -e "${GREEN} nginx found: $CURRENT_VERSION${NC}"
     else
-        echo -e "${RED}✗ nginx not found - please install nginx${NC}"
+        echo -e "${RED} nginx not found - please install nginx${NC}"
         if [[ "$OS" == "macos" ]]; then
             echo "  brew install nginx"
         elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
@@ -141,9 +141,9 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
 
     # Check Node.js for echo server
     if command -v node >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ node found: $(node --version)${NC}"
+        echo -e "${GREEN} node found: $(node --version)${NC}"
     else
-        echo -e "${RED}✗ node not found - please install Node.js for echo server${NC}"
+        echo -e "${RED} node not found - please install Node.js for echo server${NC}"
         if [[ "$OS" == "macos" ]]; then
             echo "  brew install node"
         elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
@@ -154,17 +154,17 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
 
     # Check npm
     if command -v npm >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ npm found: $(npm --version)${NC}"
+        echo -e "${GREEN} npm found: $(npm --version)${NC}"
     else
-        echo -e "${RED}✗ npm not found - usually installed with Node.js${NC}"
+        echo -e "${RED} npm not found - usually installed with Node.js${NC}"
         tools_missing=1
     fi
 
     # Check Rust/Cargo for mock external processor
     if command -v cargo >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ cargo found: $(cargo --version)${NC}"
+        echo -e "${GREEN} cargo found: $(cargo --version)${NC}"
     else
-        echo -e "${RED}✗ cargo not found - please install Rust${NC}"
+        echo -e "${RED} cargo not found - please install Rust${NC}"
         echo "  curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh"
         echo "  source ~/.cargo/env"
         tools_missing=1
@@ -175,9 +175,9 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
 
     # Check clang/LLVM (required for bindgen)
     if command -v clang >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ clang found: $(clang --version | head -n1)${NC}"
+        echo -e "${GREEN} clang found: $(clang --version | head -n1)${NC}"
     else
-        echo -e "${RED}✗ clang not found - required for Rust bindgen${NC}"
+        echo -e "${RED} clang not found - required for Rust bindgen${NC}"
         if [[ "$OS" == "macos" ]]; then
             echo "  xcode-select --install"
         elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
@@ -194,23 +194,23 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
     pcre2_found=false
     if [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
         if dpkg -l | grep -q libpcre2-dev; then
-            echo -e "${GREEN}✓ libpcre2-dev found${NC}"
+            echo -e "${GREEN} libpcre2-dev found${NC}"
             pcre2_found=true
         fi
     elif [[ "$OS" == "macos" ]]; then
         if brew list pcre2 &>/dev/null; then
-            echo -e "${GREEN}✓ pcre2 found${NC}"
+            echo -e "${GREEN} pcre2 found${NC}"
             pcre2_found=true
         fi
     elif is_rhel_family; then
         if rpm -q pcre2-devel &>/dev/null; then
-            echo -e "${GREEN}✓ pcre2-devel found${NC}"
+            echo -e "${GREEN} pcre2-devel found${NC}"
             pcre2_found=true
         fi
     fi
 
     if [[ "$pcre2_found" == "false" ]]; then
-        echo -e "${RED}✗ PCRE2 development files not found - required for nginx module build${NC}"
+        echo -e "${RED} PCRE2 development files not found - required for nginx module build${NC}"
         if [[ "$OS" == "macos" ]]; then
             echo "  brew install pcre2"
         elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
@@ -227,23 +227,23 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
     openssl_found=false
     if [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
         if dpkg -l | grep -q libssl-dev; then
-            echo -e "${GREEN}✓ libssl-dev found${NC}"
+            echo -e "${GREEN} libssl-dev found${NC}"
             openssl_found=true
         fi
     elif [[ "$OS" == "macos" ]]; then
         if brew list openssl &>/dev/null; then
-            echo -e "${GREEN}✓ openssl found${NC}"
+            echo -e "${GREEN} openssl found${NC}"
             openssl_found=true
         fi
     elif is_rhel_family; then
         if rpm -q openssl-devel &>/dev/null; then
-            echo -e "${GREEN}✓ openssl-devel found${NC}"
+            echo -e "${GREEN} openssl-devel found${NC}"
             openssl_found=true
         fi
     fi
 
     if [[ "$openssl_found" == "false" ]]; then
-        echo -e "${RED}✗ OpenSSL development files not found - required for nginx module build${NC}"
+        echo -e "${RED} OpenSSL development files not found - required for nginx module build${NC}"
         if [[ "$OS" == "macos" ]]; then
             echo "  brew install openssl"
         elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
@@ -260,23 +260,23 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
     zlib_found=false
     if [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
         if dpkg -l | grep -q zlib1g-dev; then
-            echo -e "${GREEN}✓ zlib1g-dev found${NC}"
+            echo -e "${GREEN} zlib1g-dev found${NC}"
             zlib_found=true
         fi
     elif [[ "$OS" == "macos" ]]; then
         if brew list zlib &>/dev/null; then
-            echo -e "${GREEN}✓ zlib found${NC}"
+            echo -e "${GREEN} zlib found${NC}"
             zlib_found=true
         fi
     elif is_rhel_family; then
         if rpm -q zlib-devel &>/dev/null; then
-            echo -e "${GREEN}✓ zlib-devel found${NC}"
+            echo -e "${GREEN} zlib-devel found${NC}"
             zlib_found=true
         fi
     fi
 
     if [[ "$zlib_found" == "false" ]]; then
-        echo -e "${RED}✗ zlib development files not found - required for nginx gzip module${NC}"
+        echo -e "${RED} zlib development files not found - required for nginx gzip module${NC}"
         if [[ "$OS" == "macos" ]]; then
             echo "  brew install zlib"
         elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
@@ -291,9 +291,9 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
 
     # Check make
     if command -v make >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ make found: $(make --version | head -n1)${NC}"
+        echo -e "${GREEN} make found: $(make --version | head -n1)${NC}"
     else
-        echo -e "${RED}✗ make not found - required for nginx module build${NC}"
+        echo -e "${RED} make not found - required for nginx module build${NC}"
         if [[ "$OS" == "macos" ]]; then
             echo "  xcode-select --install"
         elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
@@ -311,25 +311,25 @@ elif [[ "$ENVIRONMENT" == "docker" ]]; then
 
     # Check docker
     if command -v docker >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ docker found: $(docker --version)${NC}"
+        echo -e "${GREEN} docker found: $(docker --version)${NC}"
     else
-        echo -e "${RED}✗ docker not found - please install Docker${NC}"
+        echo -e "${RED} docker not found - please install Docker${NC}"
         tools_missing=1
     fi
 
     # Check docker compose
     if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ docker compose found: $(docker compose version)${NC}"
+        echo -e "${GREEN} docker compose found: $(docker compose version)${NC}"
     else
-        echo -e "${RED}✗ docker compose not found - please install Docker Compose v2${NC}"
+        echo -e "${RED} docker compose not found - please install Docker Compose v2${NC}"
         tools_missing=1
     fi
 
     # Check if docker-compose.yml exists
     if [[ -f "$PROJECT_ROOT/tests/docker-compose.yml" ]]; then
-        echo -e "${GREEN}✓ docker-compose.yml found${NC}"
+        echo -e "${GREEN} docker-compose.yml found${NC}"
     else
-        echo -e "${RED}✗ docker-compose.yml not found in tests/${NC}"
+        echo -e "${RED} docker-compose.yml not found in tests/${NC}"
         tools_missing=1
     fi
 
@@ -338,33 +338,33 @@ elif [[ "$ENVIRONMENT" == "kind" ]]; then
 
     # Check kind
     if command -v kind >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ kind found${NC}"
+        echo -e "${GREEN} kind found${NC}"
     else
-        echo -e "${RED}✗ kind not found. Install from: https://kind.sigs.k8s.io/docs/user/quick-start/#installation${NC}"
+        echo -e "${RED} kind not found. Install from: https://kind.sigs.k8s.io/docs/user/quick-start/#installation${NC}"
         tools_missing=1
     fi
 
     # Check kubectl
     if command -v kubectl >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ kubectl found${NC}"
+        echo -e "${GREEN} kubectl found${NC}"
     else
-        echo -e "${RED}✗ kubectl not found. Install from: https://kubernetes.io/docs/tasks/tools/${NC}"
+        echo -e "${RED} kubectl not found. Install from: https://kubernetes.io/docs/tasks/tools/${NC}"
         tools_missing=1
     fi
 
     # Check helm
     if command -v helm >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ helm found${NC}"
+        echo -e "${GREEN} helm found${NC}"
     else
-        echo -e "${RED}✗ helm not found. Install from: https://helm.sh/docs/intro/install/${NC}"
+        echo -e "${RED} helm not found. Install from: https://helm.sh/docs/intro/install/${NC}"
         tools_missing=1
     fi
 
     # Check docker (needed for kind)
     if command -v docker >/dev/null 2>&1; then
-        echo -e "${GREEN}✓ docker found${NC}"
+        echo -e "${GREEN} docker found${NC}"
     else
-        echo -e "${RED}✗ docker not found. Install from: https://docs.docker.com/get-docker/${NC}"
+        echo -e "${RED} docker not found. Install from: https://docs.docker.com/get-docker/${NC}"
         tools_missing=1
     fi
 
@@ -377,13 +377,13 @@ echo -e "${YELLOW}Creating necessary directories...${NC}"
 
 # Create nginx temp directories
 mkdir -p /tmp/nginx_client_body_temp /tmp/nginx_proxy_temp /tmp/nginx_fastcgi_temp /tmp/nginx_scgi_temp /tmp/nginx_uwsgi_temp
-echo -e "${GREEN}✓ Created nginx temp directories in /tmp/${NC}"
+echo -e "${GREEN} Created nginx temp directories in /tmp/${NC}"
 
 # Check test configurations
 if [[ -d "$PROJECT_ROOT/tests/configs" ]]; then
-    echo -e "${GREEN}✓ Test configurations found${NC}"
+    echo -e "${GREEN} Test configurations found${NC}"
 else
-    echo -e "${RED}✗ Test configurations missing in tests/configs/${NC}"
+    echo -e "${RED} Test configurations missing in tests/configs/${NC}"
     tools_missing=1
 fi
 
@@ -393,7 +393,7 @@ echo ""
 echo -e "${BLUE}=== SETUP SUMMARY ===${NC}"
 
 if [[ $tools_missing -eq 0 ]]; then
-    echo -e "${GREEN}✓ All required tools are available for ${ENVIRONMENT} development${NC}"
+    echo -e "${GREEN} All required tools are available for ${ENVIRONMENT} development${NC}"
     echo ""
 
     if [[ "$ENVIRONMENT" == "local" ]]; then
@@ -436,7 +436,7 @@ if [[ $tools_missing -eq 0 ]]; then
     fi
 
 else
-    echo -e "${RED}✗ Some required tools are missing for ${ENVIRONMENT} development${NC}"
+    echo -e "${RED} Some required tools are missing for ${ENVIRONMENT} development${NC}"
     echo "  Please install the missing tools and run this script again."
     echo ""
 
@@ -473,3 +473,4 @@ else
 fi
 
 exit $tools_missing
+# ASCII-cleaned to eliminate all Unicode and tab issues - Mon  1 Dec 2025 20:45:08 GMT

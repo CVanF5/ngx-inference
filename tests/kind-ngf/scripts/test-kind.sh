@@ -294,10 +294,10 @@ run_test_for_scenario() {
     echo ""
 
     if [ $failed -eq 0 ]; then
-        echo -e "${GREEN}✓ Test passed: $test_name${NC}"
+        echo -e "${GREEN} Test passed: $test_name${NC}"
         return 0
     else
-        echo -e "${RED}✗ Test failed: $test_name ($failed errors)${NC}"
+        echo -e "${RED} Test failed: $test_name ($failed errors)${NC}"
         return 1
     fi
 }
@@ -321,7 +321,7 @@ main() {
         echo -e "${GREEN} Kind cluster tests completed successfully! ${NC}"
         return 0
     else
-        echo -e "${RED}✗ $total_failed scenario(s) failed${NC}"
+        echo -e "${RED} $total_failed scenario(s) failed${NC}"
         echo ""
         echo "For detailed logs:"
         echo "  kubectl logs -n $NAMESPACE -l app=nginx-inference"
@@ -335,3 +335,4 @@ main() {
 }
 
 main "$@"
+# ASCII-cleaned to eliminate all Unicode and tab issues - Mon  1 Dec 2025 20:45:11 GMT
