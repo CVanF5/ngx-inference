@@ -168,11 +168,22 @@ lint:
 		exit 1; \
 	fi
 	@echo "Checking for tabs instead of spaces..."
-	@if find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -l $$'\t' 2>/dev/null | head -10 | grep -q .; then \
+	@echo "Debug: Running tab detection command..."
+	@find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -Hn $$'\t' 2>/dev/null | head -10 > /tmp/tab_check.txt || true
+	@if [ -s /tmp/tab_check.txt ]; then \
 		echo "❌ Tab characters found in source files:"; \
-		find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -Hn $$'\t' 2>/dev/null | head -10; \
+		cat /tmp/tab_check.txt; \
+		echo "Debug: Hex dump of problematic lines:"; \
+		while IFS=: read -r file line content; do \
+			echo "File: $$file, Line: $$line"; \
+			sed -n "$${line}p" "$$file" | od -c; \
+		done < /tmp/tab_check.txt; \
 		echo "Please use spaces for indentation."; \
+		rm -f /tmp/tab_check.txt; \
 		exit 1; \
+	else \
+		echo "✅ No tab characters found"; \
+		rm -f /tmp/tab_check.txt; \
 	fi
 	@echo "Checking for Windows line endings..."
 	@if find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -l $$'\r' 2>/dev/null | grep -q .; then \

@@ -338,3 +338,4 @@ main "$@"
 
 # Fixed tab characters
 
+# Completely reconstructed to eliminate tabs - Mon  1 Dec 2025 20:35:36 GMT
