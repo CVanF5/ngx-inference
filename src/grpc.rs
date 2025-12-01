@@ -113,99 +113,21 @@ pub fn epp_headers_blocking(
     header_name: &str,
     headers: Vec<(String, String)>,
     use_tls: bool,
-    tls_insecure: bool,
 ) -> Result<Option<String>, String> {
     let target_key_lower = header_name.to_ascii_lowercase();
     let uri = normalize_endpoint(endpoint, use_tls);
 
     get_runtime().block_on(async move {
-        let channel_builder = Channel::from_shared(uri.clone())
-            .map_err(|e| format!("channel error: {e}"))?;
+        let channel_builder =
+            Channel::from_shared(uri.clone()).map_err(|e| format!("channel error: {e}"))?;
 
         // Build the channel with appropriate TLS configuration
-        let channel = if use_tls && tls_insecure {
-            // INSECURE MODE: Accept self-signed certificates
-            // WARNING: Only for development/testing. Uses a no-op certificate verifier.
-            use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-            use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-            use rustls::{ClientConfig, DigitallySignedStruct, Error as RustlsError, SignatureScheme};
-            use std::sync::Arc;
-            
-            // Minimal verifier that accepts any certificate
-            #[derive(Debug)]
-            struct NoVerifier;
-            
-            impl ServerCertVerifier for NoVerifier {
-                fn verify_server_cert(
-                    &self, _: &CertificateDer, _: &[CertificateDer], _: &ServerName, _: &[u8], _: UnixTime,
-                ) -> Result<ServerCertVerified, RustlsError> {
-                    Ok(ServerCertVerified::assertion())
-                }
-                
-                fn verify_tls12_signature(
-                    &self, _: &[u8], _: &CertificateDer, _: &DigitallySignedStruct,
-                ) -> Result<HandshakeSignatureValid, RustlsError> {
-                    Ok(HandshakeSignatureValid::assertion())
-                }
-                
-                fn verify_tls13_signature(
-                    &self, _: &[u8], _: &CertificateDer, _: &DigitallySignedStruct,
-                ) -> Result<HandshakeSignatureValid, RustlsError> {
-                    Ok(HandshakeSignatureValid::assertion())
-                }
-                
-                fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-                    vec![
-                        SignatureScheme::RSA_PKCS1_SHA256, SignatureScheme::ECDSA_NISTP256_SHA256,
-                        SignatureScheme::RSA_PSS_SHA256, SignatureScheme::ED25519,
-                    ]
-                }
-            }
-            
-            let mut tls_config = ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(NoVerifier))
-                .with_no_client_auth();
-            tls_config.alpn_protocols = vec![b"h2".to_vec()];
-            
-            use tokio_rustls::TlsConnector;
-            let connector = TlsConnector::from(Arc::new(tls_config));
-            
-            use hyper_util::rt::TokioIo;
-            use tower::service_fn;
-            
-            let endpoint_owned = endpoint.to_string();
-            let svc = service_fn(move |_uri: hyper::Uri| {
-                let connector = connector.clone();
-                let endpoint = endpoint_owned.clone();
-                
-                async move {
-                    let addr = endpoint
-                        .strip_prefix("https://").or_else(|| endpoint.strip_prefix("http://"))
-                        .unwrap_or(&endpoint);
-                    
-                    let tcp = tokio::net::TcpStream::connect(addr).await
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                    
-                    let hostname = addr.split(':').next().unwrap_or(addr);
-                    let server_name = ServerName::try_from(hostname)
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                    
-                    let tls = connector.connect(server_name.to_owned(), tcp).await
-                        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
-                    
-                    Ok::<_, std::io::Error>(TokioIo::new(tls))
-                }
-            });
-            
-            channel_builder.connect_with_connector(svc).await
-                .map_err(|e| format!("connect error: {e}"))?
-        } else if use_tls {
-            // SECURE MODE: Use standard TLS validation with system root certificates
+        let channel = if use_tls {
+            // SECURE MODE: Use standard TLS validation with trusted certificates
             use tonic::transport::ClientTlsConfig;
-            
+
             let tls_config = ClientTlsConfig::new().with_enabled_roots();
-            
+
             channel_builder
                 .tls_config(tls_config)
                 .map_err(|e| format!("tls config error: {e}"))?
@@ -248,14 +170,14 @@ pub fn epp_headers_blocking(
             use prost_types::Struct;
             use std::collections::BTreeMap;
             let mut filter_metadata = std::collections::HashMap::new();
-            
+
             // Add empty metadata structure for EPP to populate
             // EPP will use this for routing decisions
             let metadata_struct = Struct {
                 fields: BTreeMap::new(),
             };
             filter_metadata.insert("envoy.lb".to_string(), metadata_struct);
-            
+
             Some(envoy::config::core::v3::Metadata {
                 filter_metadata,
                 typed_filter_metadata: std::collections::HashMap::new(),
@@ -265,7 +187,7 @@ pub fn epp_headers_blocking(
         let req_headers = HttpHeaders {
             headers: Some(header_map),
             attributes: std::collections::HashMap::new(),
-            end_of_stream: true,  // No body follows for headers-only exchange
+            end_of_stream: true, // No body follows for headers-only exchange
         };
 
         use envoy::service::ext_proc::v3::processing_request;

@@ -58,9 +58,8 @@ data:
                 # Use Gateway API standard header name
                 inference_epp_header_name "x-gateway-destination-endpoint";
                 
-                # TLS configuration for EPP connection with self-signed certificate
+                # TLS configuration for EPP connection with trusted certificate
                 inference_epp_tls on;
-                inference_epp_tls_insecure on;
 
                 # Proxy to the upstream selected by EPP
                 proxy_pass http://$inference_upstream$request_uri;
@@ -141,6 +140,9 @@ spec:
             - name: nginx-config
               mountPath: /etc/nginx/nginx.conf
               subPath: nginx.conf
+            - name: epp-tls-cert
+              mountPath: /etc/epp-tls
+              readOnly: true
           resources:
             requests:
               memory: "128Mi"
@@ -164,3 +166,6 @@ spec:
         - name: nginx-config
           configMap:
             name: nginx-inference-config
+        - name: epp-tls-cert
+          secret:
+            secretName: epp-tls-secret

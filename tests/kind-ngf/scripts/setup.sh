@@ -60,6 +60,13 @@ check_prerequisites() {
         echo -e "${GREEN}✓ helm found${NC}"
     fi
     
+    if ! command -v openssl &> /dev/null; then
+        echo -e "${RED}✗ openssl not found${NC}"
+        missing=1
+    else
+        echo -e "${GREEN}✓ openssl found${NC}"
+    fi
+    
     if [ $missing -eq 1 ]; then
         echo -e "${RED}Missing required tools. Please install them and try again.${NC}"
         exit 1
@@ -98,6 +105,37 @@ build_and_load_image() {
     kind load docker-image echo-server:latest --name "$CLUSTER_NAME"
     
     echo -e "${GREEN}✓ Images built and loaded${NC}"
+    echo ""
+}
+
+# Generate TLS certificate and create Kubernetes secret
+generate_tls_certificate() {
+    echo -e "${YELLOW}Generating TLS certificate for EPP...${NC}"
+    
+    # Create temporary directory for certificates
+    local cert_dir=$(mktemp -d)
+    local cert_file="$cert_dir/tls.crt"
+    local key_file="$cert_dir/tls.key"
+    
+    # Generate private key
+    openssl genrsa -out "$key_file" 2048
+    
+    # Generate self-signed certificate
+    # Using SAN for better compatibility with modern TLS clients
+    openssl req -new -x509 -key "$key_file" -out "$cert_file" -days 365 \
+        -subj "/C=US/ST=CA/L=TestCity/O=TestOrg/OU=TestUnit/CN=vllm-llama3-8b-instruct-epp.${NAMESPACE}.svc.cluster.local" \
+        -addext "subjectAltName=DNS:vllm-llama3-8b-instruct-epp.${NAMESPACE}.svc.cluster.local,DNS:localhost,IP:127.0.0.1"
+    
+    # Create Kubernetes secret
+    kubectl create secret tls epp-tls-secret \
+        --cert="$cert_file" \
+        --key="$key_file" \
+        --namespace="$NAMESPACE"
+    
+    # Clean up temporary files
+    rm -rf "$cert_dir"
+    
+    echo -e "${GREEN}✓ TLS certificate generated and secret created${NC}"
     echo ""
 }
 
@@ -140,22 +178,30 @@ deploy_vllm_and_epp() {
     fi
     
     # Install EPP via Helm chart (this will also create the InferencePool)
-    echo -e "${YELLOW}Installing EPP via InferencePool Helm chart...${NC}"
+    echo -e "${YELLOW}Installing EPP via InferencePool Helm chart with TLS enabled...${NC}"
     helm install vllm-llama3-8b-instruct \
         --namespace "$NAMESPACE" \
         --create-namespace \
         --set inferencePool.modelServers.matchLabels.app=vllm-llama3-8b-instruct \
         --set inferenceExtension.flags[0].name=v \
         --set inferenceExtension.flags[0].value=4 \
-        --set inferenceExtension.flags[1].name=secure-serving \
-        --set inferenceExtension.flags[1].value=false \
+        --set inferenceExtension.flags[1].name=cert-path \
+        --set inferenceExtension.flags[1].value=/etc/tls \
+        --set inferenceExtension.flags[2].name=secure-serving \
+        --set inferenceExtension.flags[2].value=true \
         --set provider.name=none \
         oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool \
-        --version "$IGW_CHART_VERSION" \
-        --wait \
-        --timeout 5m
-    echo -e "${GREEN}✓ EPP installed via Helm${NC}"
+        --version "$IGW_CHART_VERSION"
+    echo -e "${GREEN}✓ EPP helm chart installed${NC}"
     
+    # Immediately patch the deployment to add TLS volume mounts before EPP starts
+    echo -e "${YELLOW}Patching EPP deployment to mount TLS certificate...${NC}"
+    kubectl patch deployment vllm-llama3-8b-instruct-epp -n "$NAMESPACE" --type='json' -p='[
+        {"op": "add", "path": "/spec/template/spec/volumes/-", "value": {"name": "epp-tls", "secret": {"secretName": "epp-tls-secret"}}},
+        {"op": "add", "path": "/spec/template/spec/containers/0/volumeMounts/-", "value": {"name": "epp-tls", "mountPath": "/etc/tls", "readOnly": true}}
+    ]'
+    echo -e "${GREEN}✓ EPP deployment patched with TLS volume${NC}"
+
     # Wait for EPP pod to be ready
     echo -e "${YELLOW}Waiting for EPP pod to be ready...${NC}"
     sleep 3
@@ -258,9 +304,13 @@ print_access_info() {
     echo "Cluster: $CLUSTER_NAME"
     echo "Namespace: $NAMESPACE"
     echo ""
+    echo "EPP Configuration:"
+    echo "  TLS: ENABLED with self-signed certificate"
+    echo "  Certificate mounted at: /etc/tls/"
+    echo ""
     echo "Access NGINX via:"
     echo "  http://localhost:8080/health"
-    echo "  http://localhost:8080/v1/chat/completions (EPP-enabled)"
+    echo "  http://localhost:8080/v1/chat/completions (EPP-enabled with TLS)"
     echo "  http://localhost:8080/v1/completions (direct to vLLM)"
     echo ""
     echo "Useful commands:"
@@ -268,6 +318,7 @@ print_access_info() {
     echo "  kubectl logs -n $NAMESPACE -l app=nginx-inference"
     echo "  kubectl logs -n $NAMESPACE -l app=vllm-llama3-8b-instruct"
     echo "  kubectl logs -n $NAMESPACE -l app.kubernetes.io/name=reference-epp"
+    echo "  kubectl describe secret epp-tls-secret -n $NAMESPACE  # Check TLS certificate"
     echo ""
     echo "Run tests with:"
     echo "  ./tests/kind-ngf/scripts/test.sh"
@@ -283,6 +334,7 @@ main() {
     create_cluster
     build_and_load_image
     deploy_manifests
+    generate_tls_certificate
     deploy_vllm_and_epp
     deploy_nginx
     print_access_info
