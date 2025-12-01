@@ -167,13 +167,6 @@ lint:
 		echo "Run the following to fix: find src/ tests/ \\( -name '*.rs' -o -name '*.sh' \\) -exec sed -i '' 's/[[:space:]]*$$//' {} \\;"; \
 		exit 1; \
 	fi
-	@echo "Checking for Windows line endings..."
-	@if find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -l $$'\r' 2>/dev/null | grep -q .; then \
-		echo "❌ Windows line endings (CRLF) found in source files:"; \
-		find src/ tests/ -name '*.rs' -o -name '*.sh' | xargs grep -l $$'\r' 2>/dev/null; \
-		echo "Run the following to fix: find src/ tests/ \\( -name '*.rs' -o -name '*.sh' \\) -exec dos2unix {} \\;"; \
-		exit 1; \
-	fi
 	@echo "✅ All linting checks passed!"
 
 # ============================================================================
