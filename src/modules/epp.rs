@@ -1,5 +1,5 @@
 use crate::modules::{bbr::get_header_in, config::ModuleConfig};
-use ngx::http;
+use ngx::{http, ngx_log_debug_http};
 
 /// EPP (Endpoint Picker Processor) processor
 /// Communicates with external gRPC services to determine upstream routing
@@ -47,19 +47,33 @@ impl EppProcessor {
         }
 
         match crate::grpc::epp_headers_blocking(
+            request,
             endpoint,
             conf.epp_timeout_ms,
             upstream_header_str,
             hdrs,
+            conf.epp_tls,
+            conf.epp_ca_file.as_deref(),
         ) {
             Ok(Some(val)) => {
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: EPP gRPC success: Selected upstream '{}'",
+                    val
+                );
                 // Write upstream selection header for variable consumption.
                 let _ = request.add_header_in(upstream_header_str, &val);
             }
             Ok(None) => {
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: EPP gRPC success: No upstream provided by EPP server"
+                );
                 // No upstream provided
             }
-            Err(_err) => {
+            Err(err) => {
+                // Log the actual error for debugging
+                ngx_log_debug_http!(request, "ngx-inference: EPP gRPC error: {}", err);
                 return Err("epp grpc error");
             }
         }

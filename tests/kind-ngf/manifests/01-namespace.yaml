@@ -1,0 +1,7 @@
+# Namespace for the test infrastructure
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: ngx-inference-test
+  labels:
+    app.kubernetes.io/name: ngx-inference-test

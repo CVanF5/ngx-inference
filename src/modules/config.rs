@@ -12,10 +12,12 @@ pub struct ModuleConfig {
 
     // EPP (Endpoint Picker Processor)
     pub epp_enable: bool,
-    pub epp_endpoint: Option<String>, // host:port
+    pub epp_endpoint: Option<String>, // host:port or https://host:port
     pub epp_timeout_ms: u64,
     pub epp_failure_mode_allow: bool, // fail-open
     pub epp_header_name: String,      // default "X-Inference-Upstream"
+    pub epp_tls: bool,                // use TLS for connection
+    pub epp_ca_file: Option<String>,  // CA certificate file path for TLS verification
 }
 
 impl Default for ModuleConfig {
@@ -32,6 +34,8 @@ impl Default for ModuleConfig {
             epp_timeout_ms: 200,
             epp_failure_mode_allow: false,
             epp_header_name: "X-Inference-Upstream".to_string(),
+            epp_tls: true,
+            epp_ca_file: None,
         }
     }
 }
@@ -88,12 +92,18 @@ impl ngx::http::Merge for ModuleConfig {
             }
         }
 
-        // Inherit bools
+        // Inherit bools - only inherit true values if current level hasn't explicitly set false
         if prev.bbr_failure_mode_allow {
             self.bbr_failure_mode_allow = true;
         }
         if prev.epp_failure_mode_allow {
             self.epp_failure_mode_allow = true;
+        }
+        // Note: epp_tls should not inherit - each level uses its own explicit value or default
+
+        // Inherit CA file option if not set
+        if self.epp_ca_file.is_none() {
+            self.epp_ca_file = prev.epp_ca_file.clone();
         }
 
         Ok(())
