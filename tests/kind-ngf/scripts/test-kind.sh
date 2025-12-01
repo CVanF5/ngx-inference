@@ -50,7 +50,7 @@ setup_port_forward() {
     fi
     
     # Start port forward in background
-    kubectl port-forward -n "$NAMESPACE" "$nginx_pod" 8081:80 >/dev/null 2>&1 &
+    kubectl port-forward -n "$NAMESPACE" "$nginx_pod" 8081:8081 >/dev/null 2>&1 &
     local pf_pid=$!
     
     # Wait for port forward to be ready

@@ -7,7 +7,7 @@
 
 use crate::protos::envoy;
 
-use std::sync::{Arc, OnceLock};
+use std::sync::OnceLock;
 
 use tonic::transport::Channel;
 
@@ -103,7 +103,7 @@ fn parse_response_for_header(resp: &ProcessingResponse, target_key_lower: &str) 
     None
 }
 
-/// EPP: Headers-only exchange for upstream endpoint selection.
+/// EPP: Request headers and body exchange for upstream endpoint selection.
 ///
 /// Returns Ok(Some(value)) if the ext-proc service replies with a header mutation
 /// for the specified header name; Ok(None) if not present; Err(...) on transport-level errors.
@@ -124,113 +124,81 @@ pub fn epp_headers_blocking(
 
         // Build the channel with appropriate TLS configuration
         let channel = if use_tls && tls_insecure {
-            // INSECURE MODE: Use TLS but accept invalid/self-signed certificates
-            // WARNING: Only use in development/testing environments
+            // INSECURE MODE: Accept self-signed certificates
+            // WARNING: Only for development/testing. Uses a no-op certificate verifier.
             use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
             use rustls::pki_types::{CertificateDer, ServerName, UnixTime};
-            use rustls::{ClientConfig, DigitallySignedStruct, Error, SignatureScheme};
-            use tokio_rustls::TlsConnector;
+            use rustls::{ClientConfig, DigitallySignedStruct, Error as RustlsError, SignatureScheme};
+            use std::sync::Arc;
             
+            // Minimal verifier that accepts any certificate
             #[derive(Debug)]
             struct NoVerifier;
             
             impl ServerCertVerifier for NoVerifier {
                 fn verify_server_cert(
-                    &self,
-                    _end_entity: &CertificateDer<'_>,
-                    _intermediates: &[CertificateDer<'_>],
-                    _server_name: &ServerName<'_>,
-                    _ocsp_response: &[u8],
-                    _now: UnixTime,
-                ) -> Result<ServerCertVerified, Error> {
+                    &self, _: &CertificateDer, _: &[CertificateDer], _: &ServerName, _: &[u8], _: UnixTime,
+                ) -> Result<ServerCertVerified, RustlsError> {
                     Ok(ServerCertVerified::assertion())
                 }
                 
                 fn verify_tls12_signature(
-                    &self,
-                    _message: &[u8],
-                    _cert: &CertificateDer<'_>,
-                    _dss: &DigitallySignedStruct,
-                ) -> Result<HandshakeSignatureValid, Error> {
+                    &self, _: &[u8], _: &CertificateDer, _: &DigitallySignedStruct,
+                ) -> Result<HandshakeSignatureValid, RustlsError> {
                     Ok(HandshakeSignatureValid::assertion())
                 }
                 
                 fn verify_tls13_signature(
-                    &self,
-                    _message: &[u8],
-                    _cert: &CertificateDer<'_>,
-                    _dss: &DigitallySignedStruct,
-                ) -> Result<HandshakeSignatureValid, Error> {
+                    &self, _: &[u8], _: &CertificateDer, _: &DigitallySignedStruct,
+                ) -> Result<HandshakeSignatureValid, RustlsError> {
                     Ok(HandshakeSignatureValid::assertion())
                 }
                 
                 fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
                     vec![
-                        SignatureScheme::RSA_PKCS1_SHA1,
-                        SignatureScheme::ECDSA_SHA1_Legacy,
-                        SignatureScheme::RSA_PKCS1_SHA256,
-                        SignatureScheme::ECDSA_NISTP256_SHA256,
-                        SignatureScheme::RSA_PKCS1_SHA384,
-                        SignatureScheme::ECDSA_NISTP384_SHA384,
-                        SignatureScheme::RSA_PKCS1_SHA512,
-                        SignatureScheme::ECDSA_NISTP521_SHA512,
-                        SignatureScheme::RSA_PSS_SHA256,
-                        SignatureScheme::RSA_PSS_SHA384,
-                        SignatureScheme::RSA_PSS_SHA512,
-                        SignatureScheme::ED25519,
-                        SignatureScheme::ED448,
+                        SignatureScheme::RSA_PKCS1_SHA256, SignatureScheme::ECDSA_NISTP256_SHA256,
+                        SignatureScheme::RSA_PSS_SHA256, SignatureScheme::ED25519,
                     ]
                 }
             }
             
-            let mut rustls_config = ClientConfig::builder()
+            let mut tls_config = ClientConfig::builder()
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(NoVerifier))
                 .with_no_client_auth();
-                
-            rustls_config.alpn_protocols = vec![b"h2".to_vec()];
+            tls_config.alpn_protocols = vec![b"h2".to_vec()];
             
-            let tls_connector = TlsConnector::from(Arc::new(rustls_config));
+            use tokio_rustls::TlsConnector;
+            let connector = TlsConnector::from(Arc::new(tls_config));
             
-            // Extract endpoint address (with port) and hostname for TLS
-            let endpoint_addr = endpoint
-                .strip_prefix("https://")
-                .or_else(|| endpoint.strip_prefix("http://"))
-                .unwrap_or(endpoint)
-                .to_string();
-            
-            let hostname = endpoint_addr
-                .split(':')
-                .next()
-                .unwrap_or(&endpoint_addr)
-                .to_string();
-            
-            // Connect with custom TLS
             use hyper_util::rt::TokioIo;
             use tower::service_fn;
             
-            let connector = service_fn(move |_uri: hyper::Uri| {
-                let tls_connector = tls_connector.clone();
-                let endpoint_addr = endpoint_addr.clone();
-                let hostname = hostname.clone();
+            let endpoint_owned = endpoint.to_string();
+            let svc = service_fn(move |_uri: hyper::Uri| {
+                let connector = connector.clone();
+                let endpoint = endpoint_owned.clone();
                 
                 async move {
-                    let tcp_stream = tokio::net::TcpStream::connect(&endpoint_addr).await
+                    let addr = endpoint
+                        .strip_prefix("https://").or_else(|| endpoint.strip_prefix("http://"))
+                        .unwrap_or(&endpoint);
+                    
+                    let tcp = tokio::net::TcpStream::connect(addr).await
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                     
-                    let server_name = ServerName::try_from(hostname.as_str())
+                    let hostname = addr.split(':').next().unwrap_or(addr);
+                    let server_name = ServerName::try_from(hostname)
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                     
-                    let tls_stream = tls_connector.connect(server_name.to_owned(), tcp_stream).await
+                    let tls = connector.connect(server_name.to_owned(), tcp).await
                         .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
                     
-                    Ok::<_, std::io::Error>(TokioIo::new(tls_stream))
+                    Ok::<_, std::io::Error>(TokioIo::new(tls))
                 }
             });
             
-            channel_builder
-                .connect_with_connector(connector)
-                .await
+            channel_builder.connect_with_connector(svc).await
                 .map_err(|e| format!("connect error: {e}"))?
         } else if use_tls {
             // SECURE MODE: Use standard TLS validation with system root certificates
@@ -254,7 +222,8 @@ pub fn epp_headers_blocking(
 
         let mut client = ExternalProcessorClient::new(channel);
 
-        // EPP uses headers-only mode - no body processing
+        // EPP: For headers-only exchange, we still need to indicate body mode
+        // but we mark end_of_stream=true on headers to indicate no body follows
         let proto_cfg = ProtocolConfiguration {
             request_body_mode: BodySendMode::None as i32,
             response_body_mode: BodySendMode::None as i32,
@@ -274,22 +243,41 @@ pub fn epp_headers_blocking(
             headers: header_entries,
         };
 
+        // Build metadata_context for EPP routing metadata
+        let metadata_context = {
+            use prost_types::Struct;
+            use std::collections::BTreeMap;
+            let mut filter_metadata = std::collections::HashMap::new();
+            
+            // Add empty metadata structure for EPP to populate
+            // EPP will use this for routing decisions
+            let metadata_struct = Struct {
+                fields: BTreeMap::new(),
+            };
+            filter_metadata.insert("envoy.lb".to_string(), metadata_struct);
+            
+            Some(envoy::config::core::v3::Metadata {
+                filter_metadata,
+                typed_filter_metadata: std::collections::HashMap::new(),
+            })
+        };
+
         let req_headers = HttpHeaders {
             headers: Some(header_map),
             attributes: std::collections::HashMap::new(),
-            end_of_stream: true,
+            end_of_stream: true,  // No body follows for headers-only exchange
         };
 
         use envoy::service::ext_proc::v3::processing_request;
-        let first = ProcessingRequest {
+        let headers_msg = ProcessingRequest {
             request: Some(processing_request::Request::RequestHeaders(req_headers)),
-            metadata_context: None,
+            metadata_context,
             attributes: std::collections::HashMap::new(),
             observability_mode: false,
             protocol_config: Some(proto_cfg),
         };
 
-        let outbound = tokio_stream::iter(vec![first]);
+        let outbound = tokio_stream::iter(vec![headers_msg]);
 
         let mut inbound = client
             .process(outbound)

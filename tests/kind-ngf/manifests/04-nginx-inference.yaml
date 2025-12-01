@@ -57,6 +57,10 @@ data:
                 inference_epp_failure_mode_allow off;
                 # Use Gateway API standard header name
                 inference_epp_header_name "x-gateway-destination-endpoint";
+                
+                # TLS configuration for EPP connection with self-signed certificate
+                inference_epp_tls on;
+                inference_epp_tls_insecure on;
 
                 # Proxy to the upstream selected by EPP
                 proxy_pass http://$inference_upstream$request_uri;

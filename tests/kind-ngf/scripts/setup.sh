@@ -145,6 +145,10 @@ deploy_vllm_and_epp() {
         --namespace "$NAMESPACE" \
         --create-namespace \
         --set inferencePool.modelServers.matchLabels.app=vllm-llama3-8b-instruct \
+        --set inferenceExtension.flags[0].name=v \
+        --set inferenceExtension.flags[0].value=4 \
+        --set inferenceExtension.flags[1].name=secure-serving \
+        --set inferenceExtension.flags[1].value=false \
         --set provider.name=none \
         oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool \
         --version "$IGW_CHART_VERSION" \
