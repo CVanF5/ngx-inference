@@ -33,51 +33,38 @@ if ! kubectl get namespace "$NAMESPACE" &> /dev/null; then
     exit 1
 fi
 
-# Port forward setup for testing
-setup_port_forward() {
-    echo -e "${YELLOW}Setting up port forward to NGINX...${NC}"
+# Get NodePort for direct access via kind port mapping
+get_nginx_nodeport() {
+    local nodeport=$(kubectl get svc nginx-inference -n "$NAMESPACE" -o jsonpath='{.spec.ports[0].nodePort}' 2>/dev/null)
+    if [ -z "$nodeport" ]; then
+        echo -e "${RED}✗ Could not get NodePort for nginx-inference service${NC}"
+        return 1
+    fi
+    echo "$nodeport"
+}
 
-    # Kill any existing port forward
-    pkill -f "kubectl port-forward.*nginx-inference" || true
-    sleep 1
-
-    # Get NGINX pod name
-    local nginx_pod=$(kubectl get pods -n "$NAMESPACE" -l app=nginx-inference -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
-
-    if [ -z "$nginx_pod" ]; then
-        echo -e "${RED}✗ NGINX pod not found${NC}"
+# Test direct NodePort connectivity (via kind port mapping)
+test_nodeport_connectivity() {
+    local nodeport=$(get_nginx_nodeport)
+    if [ $? -ne 0 ]; then
         return 1
     fi
 
-    # Start port forward in background
-    kubectl port-forward -n "$NAMESPACE" "$nginx_pod" 8081:8081 >/dev/null 2>&1 &
-    local pf_pid=$!
+    echo -e "${YELLOW}Testing direct NodePort access on localhost:$nodeport...${NC}"
 
-    # Wait for port forward to be ready
+    # Wait for service to be ready via direct NodePort access
     local wait_count=0
     while [ $wait_count -lt 30 ]; do
-        if curl -sf http://localhost:8081/health >/dev/null 2>&1; then
-            echo -e "${GREEN}✓ Port forward ready${NC}"
-            echo "$pf_pid" > /tmp/kind-port-forward.pid
+        if curl -sf "http://localhost:$nodeport/health" >/dev/null 2>&1; then
+            echo -e "${GREEN}✓ NodePort $nodeport accessible directly via kind port mapping${NC}"
             return 0
         fi
         sleep 0.5
         ((wait_count++))
     done
 
-    echo -e "${RED}✗ Port forward failed to become ready${NC}"
-    kill $pf_pid 2>/dev/null || true
+    echo -e "${RED}✗ NodePort $nodeport not accessible${NC}"
     return 1
-}
-
-# Cleanup port forward
-cleanup_port_forward() {
-    if [ -f /tmp/kind-port-forward.pid ]; then
-        local pid=$(cat /tmp/kind-port-forward.pid)
-        kill $pid 2>/dev/null || true
-        rm -f /tmp/kind-port-forward.pid
-    fi
-    pkill -f "kubectl port-forward.*nginx-inference" || true
 }
 
 # Apply configuration for a test scenario
@@ -124,16 +111,16 @@ run_test_for_scenario() {
     # Apply the configuration
     apply_test_config "$scenario"
 
-    # Reset port forward
-    cleanup_port_forward
-    if ! setup_port_forward; then
-        echo -e "${RED}✗ Failed to setup port forward${NC}"
+    # Test direct NodePort connectivity
+    if ! test_nodeport_connectivity; then
+        echo -e "${RED}✗ Failed to access NodePort directly${NC}"
         return 1
     fi
 
     # Set environment for kind testing
     export KIND_ENVIRONMENT="true"
-    export NGINX_PORT="8081"
+    local nodeport=$(get_nginx_nodeport)
+    export NGINX_PORT="$nodeport"
 
     # Source the test functions from test-config.sh
     # We'll just test the specific endpoints we need
@@ -167,7 +154,7 @@ run_test_for_scenario() {
 
     # Test health
     echo "  Testing health endpoint..."
-    if curl -sf http://localhost:8081/health >/dev/null; then
+    if curl -sf "http://localhost:$nodeport/health" >/dev/null; then
         echo -e "${GREEN}  ✓ Health check passed${NC}"
     else
         echo -e "${RED}  ✗ Health check failed${NC}"
@@ -187,7 +174,7 @@ run_test_for_scenario() {
             kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=5 2>/dev/null | sed 's/^/    /' || true
         fi
 
-        local response=$(curl -s http://localhost:8081/bbr-test \
+        local response=$(curl -s "http://localhost:$nodeport/bbr-test" \
             -H 'Content-Type: application/json' \
             --data '{"model":"test-model","prompt":"test"}' \
             -w "HTTPSTATUS:%{http_code}")
@@ -224,7 +211,7 @@ run_test_for_scenario() {
             kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=5 2>/dev/null | sed 's/^/    /' || true
         fi
 
-        local response=$(curl -s -X POST http://localhost:8081/v1/chat/completions \
+        local response=$(curl -s -X POST "http://localhost:$nodeport/v1/chat/completions" \
             -H 'Content-Type: application/json' \
             -d '{"model": "meta-llama/Llama-3.1-8B-Instruct", "messages": [{"role": "user", "content": "test EPP"}], "max_tokens": 5}' \
             -w "HTTPSTATUS:%{http_code}")
@@ -252,7 +239,7 @@ run_test_for_scenario() {
         # EPP is disabled - test that EPP endpoint works (should use $backend, not $inference_upstream)
         echo "  Testing /v1/chat/completions endpoint (EPP disabled - should use backend)..."
 
-        local response=$(curl -s -X POST http://localhost:8081/v1/chat/completions \
+        local response=$(curl -s -X POST "http://localhost:$nodeport/v1/chat/completions" \
             -H 'Content-Type: application/json' \
             --data '{"model": "meta-llama/Llama-3.1-8B-Instruct", "messages": [{"role": "user", "content": "test EPP disabled"}], "max_tokens": 5}' \
             -w "HTTPSTATUS:%{http_code}")
@@ -276,7 +263,7 @@ run_test_for_scenario() {
     # Test actual vLLM endpoints when EPP is enabled for successful responses
     if [ "$expected_epp" = "enabled" ]; then
         echo "  Testing vLLM chat/completions endpoint (EPP enabled)..."
-        local vllm_response=$(curl -s -X POST http://localhost:8081/v1/chat/completions \
+        local vllm_response=$(curl -s -X POST "http://localhost:$nodeport/v1/chat/completions" \
             -H 'Content-Type: application/json' \
             -d '{"model": "meta-llama/Llama-3.1-8B-Instruct", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 5}' \
             -w "HTTPSTATUS:%{http_code}")
@@ -319,20 +306,11 @@ run_test_for_scenario() {
 main() {
     local total_failed=0
 
-    # Setup initial port forward
-    if ! setup_port_forward; then
-        echo -e "${RED}✗ Initial port forward setup failed${NC}"
-        exit 1
-    fi
-
-    # Test all scenarios
+    # Test all scenarios using direct NodePort access
     run_test_for_scenario "bbr_on_epp_off" "BBR ON + EPP OFF" || ((total_failed++))
     run_test_for_scenario "bbr_off_epp_on" "BBR OFF + EPP ON" || ((total_failed++))
     run_test_for_scenario "bbr_on_epp_on" "BBR ON + EPP ON" || ((total_failed++))
     run_test_for_scenario "bbr_off_epp_off" "BBR OFF + EPP OFF" || ((total_failed++))
-
-    # Cleanup
-    cleanup_port_forward
 
     echo ""
     echo -e "${BLUE}=== TEST SUMMARY ===${NC}"
@@ -355,8 +333,5 @@ main() {
         return 1
     fi
 }
-
-# Trap to cleanup on exit
-trap cleanup_port_forward EXIT INT TERM
 
 main "$@"
