@@ -474,3 +474,4 @@ fi
 
 exit $tools_missing
 
+# Fixed tab characters
