@@ -216,7 +216,7 @@ run_test_for_scenario() {
     
     # Test EPP if enabled, or test expected failure if disabled
     if [ "$expected_epp" = "enabled" ]; then
-        echo "  Testing EPP endpoint..."
+        echo "  Testing EPP endpoint (/v1/chat/completions)..."
         
         # Show recent logs before test
         if [ -n "$nginx_pod" ]; then
@@ -224,9 +224,9 @@ run_test_for_scenario() {
             kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=5 2>/dev/null | sed 's/^/    /' || true
         fi
         
-        local response=$(curl -s http://localhost:8081/epp-test \
+        local response=$(curl -s -X POST http://localhost:8081/v1/chat/completions \
             -H 'Content-Type: application/json' \
-            --data '{"prompt":"test"}' \
+            -d '{"model": "meta-llama/Llama-3.1-8B-Instruct", "messages": [{"role": "user", "content": "test EPP"}], "max_tokens": 5}' \
             -w "HTTPSTATUS:%{http_code}")
         
         local http_code=$(echo "$response" | grep -o 'HTTPSTATUS:[0-9]*' | cut -d: -f2)
@@ -250,36 +250,36 @@ run_test_for_scenario() {
         fi
     else
         # EPP is disabled - test that EPP endpoint works (should use $backend, not $inference_upstream)
-        echo "  Testing EPP endpoint (EPP disabled - should use backend)..."
+        echo "  Testing /v1/chat/completions endpoint (EPP disabled - should use backend)..."
         
-        local response=$(curl -s http://localhost:8081/epp-test \
+        local response=$(curl -s -X POST http://localhost:8081/v1/chat/completions \
             -H 'Content-Type: application/json' \
-            --data '{"prompt":"test"}' \
+            --data '{"model": "meta-llama/Llama-3.1-8B-Instruct", "messages": [{"role": "user", "content": "test EPP disabled"}], "max_tokens": 5}' \
             -w "HTTPSTATUS:%{http_code}")
         
         local http_code=$(echo "$response" | grep -o 'HTTPSTATUS:[0-9]*' | cut -d: -f2)
         local body=$(echo "$response" | sed 's/HTTPSTATUS:[0-9]*$//')
         
         if [ "$http_code" = "200" ]; then
-            echo -e "${GREEN}  ✓ EPP endpoint with EPP disabled responded: HTTP $http_code${NC}"
+            echo -e "${GREEN}  ✓ /v1/chat/completions endpoint with EPP disabled responded: HTTP $http_code${NC}"
         elif [ "$http_code" = "500" ] || [ "$http_code" = "502" ] || [ "$http_code" = "503" ] || [ "$http_code" = "504" ]; then
-            echo -e "${RED}  ✗ EPP endpoint failed (EPP disabled): HTTP $http_code${NC}"
+            echo -e "${RED}  ✗ /v1/chat/completions endpoint failed (EPP disabled): HTTP $http_code${NC}"
             echo -e "${RED}  Response body: $body${NC}"
             echo -e "${YELLOW}  Note: This could be expected if config uses \$inference_upstream when EPP is off${NC}"
             # Don't increment failed here - this is an expected failure case
         else
-            echo -e "${YELLOW}  ⚠ EPP endpoint (EPP disabled): HTTP $http_code${NC}"
+            echo -e "${YELLOW}  ⚠ /v1/chat/completions endpoint (EPP disabled): HTTP $http_code${NC}"
             echo -e "${YELLOW}  Response body: $body${NC}"
         fi
     fi
     
     # Test for configurations that use $inference_upstream when EPP is disabled (expected failures)
     if [ "$expected_epp" = "disabled" ]; then
-        echo "  Testing /responses endpoint (EPP disabled - should use \$backend)..."
+        echo "  Testing /v1/completions endpoint (EPP disabled - should use \$backend)..."
         
-        local response=$(curl -s http://localhost:8081/responses \
+        local response=$(curl -s -X POST http://localhost:8081/v1/completions \
             -H 'Content-Type: application/json' \
-            --data '{"prompt":"test"}' \
+            --data '{"model": "meta-llama/Llama-3.1-8B-Instruct", "prompt": "test completions", "max_tokens": 5}' \
             -w "HTTPSTATUS:%{http_code}")
         
         local http_code=$(echo "$response" | grep -o 'HTTPSTATUS:[0-9]*' | cut -d: -f2)
@@ -287,35 +287,35 @@ run_test_for_scenario() {
         
         # Show logs for debugging
         if [ -n "$nginx_pod" ]; then
-            echo -e "${BLUE}  NGINX logs after /responses request (EPP disabled):${NC}"
+            echo -e "${BLUE}  NGINX logs after /v1/completions request (EPP disabled):${NC}"
             kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=10 2>/dev/null | sed 's/^/    /' || true
         fi
         
-        # When EPP is disabled, /responses should use $backend and work correctly
+        # When EPP is disabled, /v1/completions should use $backend and work correctly
         if [ "$http_code" = "200" ]; then
-            echo -e "${GREEN}  ✓ /responses endpoint responded correctly (using \$backend): HTTP $http_code${NC}"
+            echo -e "${GREEN}  ✓ /v1/completions endpoint responded correctly (using \$backend): HTTP $http_code${NC}"
         elif [ "$http_code" = "500" ] || [ "$http_code" = "502" ] || [ "$http_code" = "503" ] || [ "$http_code" = "504" ]; then
             # Check if this is due to incorrectly using $inference_upstream 
             if echo "$body" | grep -q "inference_upstream" || kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=20 2>/dev/null | grep -q "inference_upstream"; then
-                echo -e "${RED}  ✗ CONFIGURATION ERROR: /responses endpoint uses \$inference_upstream when EPP is disabled${NC}"
+                echo -e "${RED}  ✗ CONFIGURATION ERROR: /v1/completions endpoint uses \$inference_upstream when EPP is disabled${NC}"
                 echo -e "${RED}  Response: HTTP $http_code - $body${NC}"
                 ((failed++))
             else
-                echo -e "${RED}  ✗ /responses endpoint failed unexpectedly: HTTP $http_code${NC}"
+                echo -e "${RED}  ✗ /v1/completions endpoint failed unexpectedly: HTTP $http_code${NC}"
                 echo -e "${RED}  Response body: $body${NC}"
                 ((failed++))
             fi
         else
-            echo -e "${YELLOW}  ⚠ /responses endpoint (EPP disabled): HTTP $http_code${NC}"
+            echo -e "${YELLOW}  ⚠ /v1/completions endpoint (EPP disabled): HTTP $http_code${NC}"
             echo -e "${YELLOW}  Response body: $body${NC}"
         fi
     else
         # When EPP is enabled, test that /responses endpoint can use $inference_upstream
-        echo "  Testing /responses endpoint (EPP enabled - should use \$inference_upstream)..."
+        echo "  Testing /v1/completions endpoint (EPP enabled - should use \$inference_upstream)..."
         
-        local response=$(curl -s http://localhost:8081/responses \
+        local response=$(curl -s -X POST http://localhost:8081/v1/completions \
             -H 'Content-Type: application/json' \
-            --data '{"prompt":"test"}' \
+            -d '{"model": "meta-llama/Llama-3.1-8B-Instruct", "prompt": "test completions", "max_tokens": 5}' \
             -w "HTTPSTATUS:%{http_code}")
         
         local http_code=$(echo "$response" | grep -o 'HTTPSTATUS:[0-9]*' | cut -d: -f2)
@@ -323,19 +323,48 @@ run_test_for_scenario() {
         
         # Show logs for debugging
         if [ -n "$nginx_pod" ]; then
-            echo -e "${BLUE}  NGINX logs after /responses request (EPP enabled):${NC}"
+            echo -e "${BLUE}  NGINX logs after /v1/completions request (EPP enabled):${NC}"
             kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=10 2>/dev/null | sed 's/^/    /' || true
         fi
         
         if [ "$http_code" = "200" ]; then
-            echo -e "${GREEN}  ✓ /responses endpoint responded: HTTP $http_code${NC}"
+            echo -e "${GREEN}  ✓ /v1/completions endpoint responded: HTTP $http_code${NC}"
         elif [ "$http_code" = "500" ] || [ "$http_code" = "502" ] || [ "$http_code" = "503" ] || [ "$http_code" = "504" ]; then
-            echo -e "${RED}  ✗ /responses endpoint failed: HTTP $http_code${NC}"
+            echo -e "${RED}  ✗ /v1/completions endpoint failed: HTTP $http_code${NC}"
             echo -e "${RED}  Response body: $body${NC}"
             ((failed++))
         else
-            echo -e "${YELLOW}  ⚠ /responses endpoint: HTTP $http_code${NC}"
+            echo -e "${YELLOW}  ⚠ /v1/completions endpoint: HTTP $http_code${NC}"
             echo -e "${YELLOW}  Response body: $body${NC}"
+        fi
+
+        # Test actual vLLM endpoints when EPP is enabled for successful responses
+        echo "  Testing vLLM chat/completions endpoint (EPP enabled)..."
+        local vllm_response=$(curl -s -X POST http://localhost:8081/v1/chat/completions \
+            -H 'Content-Type: application/json' \
+            -d '{"model": "meta-llama/Llama-3.1-8B-Instruct", "messages": [{"role": "user", "content": "Hello"}], "max_tokens": 5}' \
+            -w "HTTPSTATUS:%{http_code}")
+
+        local vllm_http_code=$(echo "$vllm_response" | grep -o 'HTTPSTATUS:[0-9]*' | cut -d: -f2)
+        local vllm_body=$(echo "$vllm_response" | sed 's/HTTPSTATUS:[0-9]*$//')
+
+        if [ "$vllm_http_code" = "200" ]; then
+            echo -e "${GREEN}  ✓ vLLM chat/completions responded: HTTP $vllm_http_code${NC}"
+            # Show a preview of the response
+            if echo "$vllm_body" | jq . >/dev/null 2>&1; then
+                local response_preview=$(echo "$vllm_body" | jq -r '.choices[0].message.content // .choices[0].text // "No content"' 2>/dev/null | head -c 50)
+                echo -e "${GREEN}  Response preview: ${response_preview}...${NC}"
+            fi
+        else
+            echo -e "${YELLOW}  ⚠ vLLM chat/completions: HTTP $vllm_http_code${NC}"
+            echo -e "${YELLOW}  Response body: $(echo "$vllm_body" | head -c 100)...${NC}"
+        fi
+
+        # Show EPP logs for the vLLM request
+        if [ -n "$nginx_pod" ]; then
+            echo -e "${BLUE}  NGINX logs after vLLM request (EPP activity):${NC}"
+            local recent_logs=$(kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=15 2>/dev/null)
+            echo "$recent_logs" | grep -E "(EPP gRPC|Selected upstream|DEBUG: Found header.*with value)" | sed 's/^/    /' || echo "    (No EPP logs found)"
         fi
     fi
     

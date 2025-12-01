@@ -55,10 +55,12 @@ impl EppProcessor {
             conf.epp_ca_file.as_deref(),
         ) {
             Ok(Some(val)) => {
+                eprintln!("EPP gRPC success: Selected upstream '{}'", val);
                 // Write upstream selection header for variable consumption.
                 let _ = request.add_header_in(upstream_header_str, &val);
             }
             Ok(None) => {
+                eprintln!("EPP gRPC success: No upstream provided by EPP server");
                 // No upstream provided
             }
             Err(err) => {

@@ -50,56 +50,170 @@ fn extract_header_from_mutation(
     mutation: &envoy::service::ext_proc::v3::HeaderMutation,
     target_key_lower: &str,
 ) -> Option<String> {
+    eprintln!(
+        "DEBUG: Searching for header '{}' in mutation with {} headers",
+        target_key_lower,
+        mutation.set_headers.len()
+    );
+
+    // Log all available headers for debugging
+    for (i, hvo) in mutation.set_headers.iter().enumerate() {
+        if let Some(hdr) = &hvo.header {
+            eprintln!(
+                "DEBUG: Header[{}]: key='{}', value='{}', raw_value_len={}",
+                i,
+                hdr.key,
+                hdr.value,
+                hdr.raw_value.len()
+            );
+        }
+    }
+
     for hvo in &mutation.set_headers {
         if let Some(hdr) = &hvo.header {
+            eprintln!(
+                "DEBUG: Comparing '{}' == '{}' (ignore case)",
+                hdr.key, target_key_lower
+            );
             // Keys are lower-cased in HttpHeaders; we compare ASCII-case-insensitively just in case.
             if hdr.key.eq_ignore_ascii_case(target_key_lower) {
                 if !hdr.value.is_empty() {
-                    return Some(hdr.value.clone());
+                    let value = hdr.value.clone();
+                    eprintln!("DEBUG: Found matching header with value: '{}'", value);
+                    return Some(value);
                 }
                 if !hdr.raw_value.is_empty() {
-                    return Some(String::from_utf8_lossy(&hdr.raw_value).to_string());
+                    let value = String::from_utf8_lossy(&hdr.raw_value).to_string();
+                    eprintln!("DEBUG: Found matching header with raw_value: '{}'", value);
+                    return Some(value);
                 }
+                eprintln!("DEBUG: Found matching header key but no value");
             }
         }
     }
+
+    eprintln!(
+        "DEBUG: Target header '{}' not found in header mutation",
+        target_key_lower
+    );
     None
 }
 
 fn parse_response_for_header(resp: &ProcessingResponse, target_key_lower: &str) -> Option<String> {
     use envoy::service::ext_proc::v3::processing_response;
 
+    eprintln!("DEBUG: Parsing response for header '{}'", target_key_lower);
+
     match &resp.response {
-        Some(processing_response::Response::RequestHeaders(hdrs))
-        | Some(processing_response::Response::ResponseHeaders(hdrs)) => {
+        Some(processing_response::Response::RequestHeaders(hdrs)) => {
+            eprintln!("DEBUG: Processing RequestHeaders response");
             if let Some(common) = &hdrs.response {
                 if let Some(hm) = &common.header_mutation {
+                    eprintln!(
+                        "DEBUG: Found header mutation with {} headers",
+                        hm.set_headers.len()
+                    );
                     return extract_header_from_mutation(hm, target_key_lower);
+                } else {
+                    eprintln!("DEBUG: No header mutation in RequestHeaders");
                 }
+            } else {
+                eprintln!("DEBUG: No common response in RequestHeaders");
             }
         }
-        Some(processing_response::Response::RequestBody(body))
-        | Some(processing_response::Response::ResponseBody(body)) => {
+        Some(processing_response::Response::ResponseHeaders(hdrs)) => {
+            eprintln!("DEBUG: Processing ResponseHeaders response");
+            if let Some(common) = &hdrs.response {
+                if let Some(hm) = &common.header_mutation {
+                    eprintln!(
+                        "DEBUG: Found header mutation with {} headers",
+                        hm.set_headers.len()
+                    );
+                    return extract_header_from_mutation(hm, target_key_lower);
+                } else {
+                    eprintln!("DEBUG: No header mutation in ResponseHeaders");
+                }
+            } else {
+                eprintln!("DEBUG: No common response in ResponseHeaders");
+            }
+        }
+        Some(processing_response::Response::RequestBody(body)) => {
+            eprintln!("DEBUG: Processing RequestBody response");
             if let Some(common) = &body.response {
                 if let Some(hm) = &common.header_mutation {
+                    eprintln!(
+                        "DEBUG: Found header mutation with {} headers",
+                        hm.set_headers.len()
+                    );
                     return extract_header_from_mutation(hm, target_key_lower);
+                } else {
+                    eprintln!("DEBUG: No header mutation in RequestBody");
                 }
+            } else {
+                eprintln!("DEBUG: No common response in RequestBody");
             }
         }
-        Some(processing_response::Response::RequestTrailers(tr))
-        | Some(processing_response::Response::ResponseTrailers(tr)) => {
+        Some(processing_response::Response::ResponseBody(body)) => {
+            eprintln!("DEBUG: Processing ResponseBody response");
+            if let Some(common) = &body.response {
+                if let Some(hm) = &common.header_mutation {
+                    eprintln!(
+                        "DEBUG: Found header mutation with {} headers",
+                        hm.set_headers.len()
+                    );
+                    return extract_header_from_mutation(hm, target_key_lower);
+                } else {
+                    eprintln!("DEBUG: No header mutation in ResponseBody");
+                }
+            } else {
+                eprintln!("DEBUG: No common response in ResponseBody");
+            }
+        }
+        Some(processing_response::Response::RequestTrailers(tr)) => {
+            eprintln!("DEBUG: Processing RequestTrailers response");
             if let Some(hm) = &tr.header_mutation {
+                eprintln!(
+                    "DEBUG: Found header mutation with {} headers",
+                    hm.set_headers.len()
+                );
                 return extract_header_from_mutation(hm, target_key_lower);
+            } else {
+                eprintln!("DEBUG: No header mutation in RequestTrailers");
+            }
+        }
+        Some(processing_response::Response::ResponseTrailers(tr)) => {
+            eprintln!("DEBUG: Processing ResponseTrailers response");
+            if let Some(hm) = &tr.header_mutation {
+                eprintln!(
+                    "DEBUG: Found header mutation with {} headers",
+                    hm.set_headers.len()
+                );
+                return extract_header_from_mutation(hm, target_key_lower);
+            } else {
+                eprintln!("DEBUG: No header mutation in ResponseTrailers");
             }
         }
         Some(processing_response::Response::ImmediateResponse(ir)) => {
+            eprintln!(
+                "DEBUG: Processing ImmediateResponse (status: {:?})",
+                ir.status
+            );
             if let Some(hm) = &ir.headers {
+                eprintln!(
+                    "DEBUG: Found header mutation with {} headers",
+                    hm.set_headers.len()
+                );
                 return extract_header_from_mutation(hm, target_key_lower);
+            } else {
+                eprintln!("DEBUG: No header mutation in ImmediateResponse");
             }
         }
-        None => {}
+        None => {
+            eprintln!("DEBUG: Response has no content (None)");
+        }
     }
 
+    eprintln!("DEBUG: No matching header found in response");
     None
 }
 
@@ -314,27 +428,58 @@ pub fn epp_headers_blocking(
 
         match next {
             Ok(Some(resp)) => {
+                eprintln!("DEBUG: Received EPP response: {:?}", resp);
+
                 if let Some(val) = parse_response_for_header(&resp, &target_key_lower) {
+                    eprintln!("DEBUG: Found header '{}' with value: {}", header_name, val);
                     return Ok(Some(val));
+                } else {
+                    eprintln!("DEBUG: Header '{}' not found in response", header_name);
                 }
             }
-            Ok(None) => {} // stream closed
-            Err(e) => return Err(format!("stream recv error: {e}")),
+            Ok(None) => {
+                eprintln!("DEBUG: EPP response stream closed");
+            }
+            Err(e) => {
+                eprintln!("ERROR: EPP stream receive error: {}", e);
+                return Err(format!("stream recv error: {e}"));
+            }
         }
 
         // Continue reading additional responses until stream ends or we find the header.
         loop {
             match inbound.message().await {
                 Ok(Some(resp)) => {
+                    eprintln!("DEBUG: Received additional EPP response: {:?}", resp);
+
                     if let Some(val) = parse_response_for_header(&resp, &target_key_lower) {
+                        eprintln!(
+                            "DEBUG: Found header '{}' with value in additional response: {}",
+                            header_name, val
+                        );
                         return Ok(Some(val));
+                    } else {
+                        eprintln!(
+                            "DEBUG: Header '{}' not found in additional response",
+                            header_name
+                        );
                     }
                 }
-                Ok(None) => break,
-                Err(e) => return Err(format!("stream recv error: {e}")),
+                Ok(None) => {
+                    eprintln!("DEBUG: EPP response stream ended");
+                    break;
+                }
+                Err(e) => {
+                    eprintln!("ERROR: EPP stream receive error in continuation: {}", e);
+                    return Err(format!("stream recv error: {e}"));
+                }
             }
         }
 
+        eprintln!(
+            "DEBUG: EPP processing completed, header '{}' not found in any response",
+            header_name
+        );
         Ok(None)
     })
 }
