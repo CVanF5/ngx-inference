@@ -15,17 +15,17 @@ help:
 	@echo "QUICK START:"
 	@echo "  make start-local    Setup, build, and start local services"
 	@echo "  make start-docker   Setup and start full Docker stack"
-	@echo "  make start-kind     Setup, create kind cluster, and deploy"
+	@echo "  make start-kind     Setup, create kind cluster, and deploy reference EPP"
 	@echo ""
 	@echo "SETUP (check/install dependencies - automatically run by start targets):"
-	@echo "  setup-local    Setup and validate local development environment"
-	@echo "  setup-docker   Setup and validate Docker development environment"
-	@echo "  setup-kind     Check prerequisites for kind testing"
+	@echo "  setup-local    Validate local development environment"
+	@echo "  setup-docker   Validate Docker development environment"
+	@echo "  setup-kind     Validate KIND development environment"
 	@echo ""
 	@echo "TEST (run automated tests):"
-	@echo "  test-local     Run local nginx tests"
+	@echo "  test-local     Run local tests"
 	@echo "  test-docker    Run Docker-based tests"
-	@echo "  test-kind      Run tests against reference EPP in kind cluster"
+	@echo "  test-kind      Run tests against TLS-enabled reference EPP in kind cluster"
 	@echo ""
 	@echo "UTILITY:"
 	@echo "  stop           Stop all services (local, Docker, and kind)"
@@ -55,52 +55,9 @@ setup-docker:
 	@echo "✅ Docker setup complete. Run 'make start-docker' to start services."
 
 setup-kind:
-	@echo "==> Checking prerequisites for kind testing..."
-	@missing=0; \
-	if ! command -v kind >/dev/null 2>&1; then \
-		echo "❌ kind not found. Install from: https://kind.sigs.k8s.io/docs/user/quick-start/#installation"; \
-		missing=1; \
-	else \
-		echo "✅ kind found"; \
-	fi; \
-	if ! command -v kubectl >/dev/null 2>&1; then \
-		echo "❌ kubectl not found. Install from: https://kubernetes.io/docs/tasks/tools/"; \
-		missing=1; \
-	else \
-		echo "✅ kubectl found"; \
-	fi; \
-	if ! command -v helm >/dev/null 2>&1; then \
-		echo "❌ helm not found. Install from: https://helm.sh/docs/intro/install/"; \
-		missing=1; \
-	else \
-		echo "✅ helm found"; \
-	fi; \
-	if ! command -v docker >/dev/null 2>&1; then \
-		echo "❌ docker not found. Install from: https://docs.docker.com/get-docker/"; \
-		missing=1; \
-	else \
-		echo "✅ docker found"; \
-	fi; \
-	if ! command -v curl >/dev/null 2>&1; then \
-		echo "❌ curl not found"; \
-		missing=1; \
-	else \
-		echo "✅ curl found"; \
-	fi; \
-	if ! command -v jq >/dev/null 2>&1; then \
-		echo "❌ jq not found. Install with: apt install jq / brew install jq"; \
-		missing=1; \
-	else \
-		echo "✅ jq found"; \
-	fi; \
-	if [ $$missing -eq 1 ]; then \
-		echo ""; \
-		echo "❌ Missing required tools. Please install them and try again."; \
-		exit 1; \
-	fi; \
-	echo ""; \
-	echo "✅ All prerequisites available!"; \
-	echo "✅ Kind setup complete. Run 'make start-kind' to create cluster and deploy."
+	@echo "==> Setting up KIND development environment..."
+	./tests/setup-local-dev.sh --kind
+	@echo "✅ Kind setup complete. Run 'make start-kind' to create cluster and deploy."
 
 # ============================================================================
 # START TARGETS - Build and run services
@@ -167,10 +124,13 @@ ifndef GITHUB_ACTIONS
 	@# Stop nginx if running
 	@-[ -f $(PID_FILE) ] && kill -TERM $$(cat $(PID_FILE)) 2>/dev/null || true
 	@-[ -f $(PID_FILE) ] && rm -f $(PID_FILE) 2>/dev/null || true
-	@# Stop backend services
+	@# Stop backend services using PID files
 	@-kill $$(cat /tmp/echo-server.pid 2>/dev/null) 2>/dev/null || true
 	@-kill $$(cat /tmp/extproc_mock.pid 2>/dev/null) 2>/dev/null || true
 	@rm -f /tmp/extproc_mock.pid /tmp/echo-server.pid 2>/dev/null || true
+	@# Fallback: Stop processes by name/port (in case PID files are missing)
+	@-pkill -f "custom-echo-server.js" 2>/dev/null || true
+	@-pkill -f "extproc_mock" 2>/dev/null || true
 endif
 	@echo "✅ All services stopped."
 
@@ -243,7 +203,7 @@ check:
 # LEGACY ALIASES (for compatibility)
 # ============================================================================
 
-.PHONY: build-inference build-mock build-check deploy start test test-kind-setup test-kind-cleanup generate-config
+.PHONY: build-inference build-mock build-check start test test-kind-setup test-kind-cleanup generate-config
 
 build-inference:
 	@echo "==> Building ngx-inference module..."
@@ -267,19 +227,11 @@ build-check:
 		cargo build --features "$(CARGO_FEATURES),extproc-mock,vendored" --lib --bin extproc_mock; \
 	fi
 
-deploy: start-docker
-
 start: start-docker
 
 test:
 	@echo "Please specify test environment: make test-local, make test-docker, or make test-kind"
 	@exit 1
-
-test-kind-setup: start-kind
-
-test-kind-cleanup:
-	@echo "==> Cleaning up kind cluster..."
-	kind delete cluster --name $(KIND_CLUSTER_NAME)
 
 generate-config:
 	@[ -n "$(OUTPUT)" ] || (echo "Error: OUTPUT required. Usage: make generate-config OUTPUT=/path ENV=local|docker TEST=scenario"; exit 1)

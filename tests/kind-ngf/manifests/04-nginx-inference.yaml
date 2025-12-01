@@ -77,20 +77,7 @@ data:
                 proxy_read_timeout 300s;
             }
 
-            # Direct endpoint without EPP (for comparison testing)
-            # Use variable to enable dynamic DNS resolution
-            location /v1/completions {
-                set $backend "vllm-llama3-8b-instruct.ngx-inference-test.svc.cluster.local:8000";
-                proxy_pass http://$backend;
-                proxy_set_header Host $host;
-                proxy_set_header X-Real-IP $remote_addr;
-                proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-                
-                # Increase timeouts for AI inference
-                proxy_connect_timeout 60s;
-                proxy_send_timeout 300s;
-                proxy_read_timeout 300s;
-            }
+
         }
     }
 ---

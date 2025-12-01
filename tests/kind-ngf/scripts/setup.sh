@@ -26,55 +26,6 @@ echo "Project root: $PROJECT_ROOT"
 echo "Test directory: $TEST_DIR"
 echo ""
 
-# Check prerequisites
-check_prerequisites() {
-    echo -e "${YELLOW}Checking prerequisites...${NC}"
-
-    local missing=0
-
-    if ! command -v kind &> /dev/null; then
-        echo -e "${RED}✗ kind not found${NC}"
-        missing=1
-    else
-        echo -e "${GREEN}✓ kind found${NC}"
-    fi
-
-    if ! command -v kubectl &> /dev/null; then
-        echo -e "${RED}✗ kubectl not found${NC}"
-        missing=1
-    else
-        echo -e "${GREEN}✓ kubectl found${NC}"
-    fi
-
-    if ! command -v docker &> /dev/null; then
-        echo -e "${RED}✗ docker not found${NC}"
-        missing=1
-    else
-        echo -e "${GREEN}✓ docker found${NC}"
-    fi
-
-    if ! command -v helm &> /dev/null; then
-        echo -e "${RED}✗ helm not found${NC}"
-        missing=1
-    else
-        echo -e "${GREEN}✓ helm found${NC}"
-    fi
-
-    if ! command -v openssl &> /dev/null; then
-        echo -e "${RED}✗ openssl not found${NC}"
-        missing=1
-    else
-        echo -e "${GREEN}✓ openssl found${NC}"
-    fi
-
-    if [ $missing -eq 1 ]; then
-        echo -e "${RED}Missing required tools. Please install them and try again.${NC}"
-        exit 1
-    fi
-
-    echo ""
-}
-
 # Create kind cluster
 create_cluster() {
     echo -e "${YELLOW}Creating kind cluster: $CLUSTER_NAME${NC}"
@@ -314,7 +265,6 @@ print_access_info() {
     echo "Access NGINX via:"
     echo "  http://localhost:8080/health"
     echo "  http://localhost:8080/v1/chat/completions (EPP-enabled with TLS)"
-    echo "  http://localhost:8080/v1/completions (direct to vLLM)"
     echo ""
     echo "Useful commands:"
     echo "  kubectl get pods -n $NAMESPACE"
@@ -333,7 +283,6 @@ print_access_info() {
 
 # Main execution
 main() {
-    check_prerequisites
     create_cluster
     build_and_load_image
     deploy_manifests

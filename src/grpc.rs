@@ -6,6 +6,7 @@
 //! The implementation follows the Gateway API Inference Extension specification.
 
 use crate::protos::envoy;
+use ngx::{http, ngx_log_debug_http};
 
 use std::sync::OnceLock;
 
@@ -47,11 +48,13 @@ fn normalize_endpoint(endpoint: &str, use_tls: bool) -> String {
 }
 
 fn extract_header_from_mutation(
+    request: &http::Request,
     mutation: &envoy::service::ext_proc::v3::HeaderMutation,
     target_key_lower: &str,
 ) -> Option<String> {
-    eprintln!(
-        "DEBUG: Searching for header '{}' in mutation with {} headers",
+    ngx_log_debug_http!(
+        request,
+        "ngx-inference: Searching for header '{}' in mutation with {} headers",
         target_key_lower,
         mutation.set_headers.len()
     );
@@ -59,8 +62,9 @@ fn extract_header_from_mutation(
     // Log all available headers for debugging
     for (i, hvo) in mutation.set_headers.iter().enumerate() {
         if let Some(hdr) = &hvo.header {
-            eprintln!(
-                "DEBUG: Header[{}]: key='{}', value='{}', raw_value_len={}",
+            ngx_log_debug_http!(
+                request,
+                "ngx-inference: Header[{}]: key='{}', value='{}', raw_value_len={}",
                 i,
                 hdr.key,
                 hdr.value,
@@ -71,149 +75,218 @@ fn extract_header_from_mutation(
 
     for hvo in &mutation.set_headers {
         if let Some(hdr) = &hvo.header {
-            eprintln!(
-                "DEBUG: Comparing '{}' == '{}' (ignore case)",
-                hdr.key, target_key_lower
+            ngx_log_debug_http!(
+                request,
+                "ngx-inference: Comparing '{}' == '{}' (ignore case)",
+                hdr.key,
+                target_key_lower
             );
             // Keys are lower-cased in HttpHeaders; we compare ASCII-case-insensitively just in case.
             if hdr.key.eq_ignore_ascii_case(target_key_lower) {
                 if !hdr.value.is_empty() {
                     let value = hdr.value.clone();
-                    eprintln!("DEBUG: Found matching header with value: '{}'", value);
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: Found matching header with value: '{}'",
+                        value
+                    );
                     return Some(value);
                 }
                 if !hdr.raw_value.is_empty() {
                     let value = String::from_utf8_lossy(&hdr.raw_value).to_string();
-                    eprintln!("DEBUG: Found matching header with raw_value: '{}'", value);
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: Found matching header with raw_value: '{}'",
+                        value
+                    );
                     return Some(value);
                 }
-                eprintln!("DEBUG: Found matching header key but no value");
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: Found matching header key but no value"
+                );
             }
         }
     }
 
-    eprintln!(
-        "DEBUG: Target header '{}' not found in header mutation",
+    ngx_log_debug_http!(
+        request,
+        "ngx-inference: Target header '{}' not found in header mutation",
         target_key_lower
     );
     None
 }
 
-fn parse_response_for_header(resp: &ProcessingResponse, target_key_lower: &str) -> Option<String> {
+fn parse_response_for_header(
+    request: &http::Request,
+    resp: &ProcessingResponse,
+    target_key_lower: &str,
+) -> Option<String> {
     use envoy::service::ext_proc::v3::processing_response;
 
-    eprintln!("DEBUG: Parsing response for header '{}'", target_key_lower);
+    ngx_log_debug_http!(
+        request,
+        "ngx-inference: Parsing response for header '{}'",
+        target_key_lower
+    );
 
     match &resp.response {
         Some(processing_response::Response::RequestHeaders(hdrs)) => {
-            eprintln!("DEBUG: Processing RequestHeaders response");
+            ngx_log_debug_http!(request, "ngx-inference: Processing RequestHeaders response");
             if let Some(common) = &hdrs.response {
                 if let Some(hm) = &common.header_mutation {
-                    eprintln!(
-                        "DEBUG: Found header mutation with {} headers",
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: Found header mutation with {} headers",
                         hm.set_headers.len()
                     );
-                    return extract_header_from_mutation(hm, target_key_lower);
+                    return extract_header_from_mutation(request, hm, target_key_lower);
                 } else {
-                    eprintln!("DEBUG: No header mutation in RequestHeaders");
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: No header mutation in RequestHeaders"
+                    );
                 }
             } else {
-                eprintln!("DEBUG: No common response in RequestHeaders");
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: No common response in RequestHeaders"
+                );
             }
         }
         Some(processing_response::Response::ResponseHeaders(hdrs)) => {
-            eprintln!("DEBUG: Processing ResponseHeaders response");
+            ngx_log_debug_http!(
+                request,
+                "ngx-inference: Processing ResponseHeaders response"
+            );
             if let Some(common) = &hdrs.response {
                 if let Some(hm) = &common.header_mutation {
-                    eprintln!(
-                        "DEBUG: Found header mutation with {} headers",
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: Found header mutation with {} headers",
                         hm.set_headers.len()
                     );
-                    return extract_header_from_mutation(hm, target_key_lower);
+                    return extract_header_from_mutation(request, hm, target_key_lower);
                 } else {
-                    eprintln!("DEBUG: No header mutation in ResponseHeaders");
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: No header mutation in ResponseHeaders"
+                    );
                 }
             } else {
-                eprintln!("DEBUG: No common response in ResponseHeaders");
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: No common response in ResponseHeaders"
+                );
             }
         }
         Some(processing_response::Response::RequestBody(body)) => {
-            eprintln!("DEBUG: Processing RequestBody response");
+            ngx_log_debug_http!(request, "ngx-inference: Processing RequestBody response");
             if let Some(common) = &body.response {
                 if let Some(hm) = &common.header_mutation {
-                    eprintln!(
-                        "DEBUG: Found header mutation with {} headers",
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: Found header mutation with {} headers",
                         hm.set_headers.len()
                     );
-                    return extract_header_from_mutation(hm, target_key_lower);
+                    return extract_header_from_mutation(request, hm, target_key_lower);
                 } else {
-                    eprintln!("DEBUG: No header mutation in RequestBody");
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: No header mutation in RequestBody"
+                    );
                 }
             } else {
-                eprintln!("DEBUG: No common response in RequestBody");
+                ngx_log_debug_http!(request, "ngx-inference: No common response in RequestBody");
             }
         }
         Some(processing_response::Response::ResponseBody(body)) => {
-            eprintln!("DEBUG: Processing ResponseBody response");
+            ngx_log_debug_http!(request, "ngx-inference: Processing ResponseBody response");
             if let Some(common) = &body.response {
                 if let Some(hm) = &common.header_mutation {
-                    eprintln!(
-                        "DEBUG: Found header mutation with {} headers",
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: Found header mutation with {} headers",
                         hm.set_headers.len()
                     );
-                    return extract_header_from_mutation(hm, target_key_lower);
+                    return extract_header_from_mutation(request, hm, target_key_lower);
                 } else {
-                    eprintln!("DEBUG: No header mutation in ResponseBody");
+                    ngx_log_debug_http!(
+                        request,
+                        "ngx-inference: No header mutation in ResponseBody"
+                    );
                 }
             } else {
-                eprintln!("DEBUG: No common response in ResponseBody");
+                ngx_log_debug_http!(request, "ngx-inference: No common response in ResponseBody");
             }
         }
         Some(processing_response::Response::RequestTrailers(tr)) => {
-            eprintln!("DEBUG: Processing RequestTrailers response");
+            ngx_log_debug_http!(
+                request,
+                "ngx-inference: Processing RequestTrailers response"
+            );
             if let Some(hm) = &tr.header_mutation {
-                eprintln!(
-                    "DEBUG: Found header mutation with {} headers",
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: Found header mutation with {} headers",
                     hm.set_headers.len()
                 );
-                return extract_header_from_mutation(hm, target_key_lower);
+                return extract_header_from_mutation(request, hm, target_key_lower);
             } else {
-                eprintln!("DEBUG: No header mutation in RequestTrailers");
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: No header mutation in RequestTrailers"
+                );
             }
         }
         Some(processing_response::Response::ResponseTrailers(tr)) => {
-            eprintln!("DEBUG: Processing ResponseTrailers response");
+            ngx_log_debug_http!(
+                request,
+                "ngx-inference: Processing ResponseTrailers response"
+            );
             if let Some(hm) = &tr.header_mutation {
-                eprintln!(
-                    "DEBUG: Found header mutation with {} headers",
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: Found header mutation with {} headers",
                     hm.set_headers.len()
                 );
-                return extract_header_from_mutation(hm, target_key_lower);
+                return extract_header_from_mutation(request, hm, target_key_lower);
             } else {
-                eprintln!("DEBUG: No header mutation in ResponseTrailers");
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: No header mutation in ResponseTrailers"
+                );
             }
         }
         Some(processing_response::Response::ImmediateResponse(ir)) => {
-            eprintln!(
-                "DEBUG: Processing ImmediateResponse (status: {:?})",
+            ngx_log_debug_http!(
+                request,
+                "ngx-inference: Processing ImmediateResponse (status: {:?})",
                 ir.status
             );
             if let Some(hm) = &ir.headers {
-                eprintln!(
-                    "DEBUG: Found header mutation with {} headers",
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: Found header mutation with {} headers",
                     hm.set_headers.len()
                 );
-                return extract_header_from_mutation(hm, target_key_lower);
+                return extract_header_from_mutation(request, hm, target_key_lower);
             } else {
-                eprintln!("DEBUG: No header mutation in ImmediateResponse");
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: No header mutation in ImmediateResponse"
+                );
             }
         }
         None => {
-            eprintln!("DEBUG: Response has no content (None)");
+            ngx_log_debug_http!(request, "ngx-inference: Response has no content (None)");
         }
     }
 
-    eprintln!("DEBUG: No matching header found in response");
+    ngx_log_debug_http!(
+        request,
+        "ngx-inference: No matching header found in response"
+    );
     None
 }
 
@@ -222,6 +295,7 @@ fn parse_response_for_header(resp: &ProcessingResponse, target_key_lower: &str) 
 /// Returns Ok(Some(value)) if the ext-proc service replies with a header mutation
 /// for the specified header name; Ok(None) if not present; Err(...) on transport-level errors.
 pub fn epp_headers_blocking(
+    request: &http::Request,
     endpoint: &str,
     timeout_ms: u64,
     header_name: &str,
@@ -248,17 +322,17 @@ pub fn epp_headers_blocking(
                 endpoint.to_string()
             };
 
-            eprintln!("DEBUG: TLS Configuration:");
-            eprintln!("  - Endpoint: {}", endpoint);
-            eprintln!("  - URI: {}", uri);
-            eprintln!("  - Extracted domain: '{}'", domain);
-            eprintln!("  - CA file: {:?}", ca_file);
+            ngx_log_debug_http!(request, "ngx-inference: TLS Configuration:");
+            ngx_log_debug_http!(request, "ngx-inference:   - Endpoint: {}", endpoint);
+            ngx_log_debug_http!(request, "ngx-inference:   - URI: {}", uri);
+            ngx_log_debug_http!(request, "ngx-inference:   - Extracted domain: '{}'", domain);
+            ngx_log_debug_http!(request, "ngx-inference:   - CA file: {:?}", ca_file);
 
             let mut tls_config = ClientTlsConfig::new().domain_name(&domain);
 
             // Use custom CA certificate if provided, otherwise use system roots
             if let Some(ca_path) = ca_file {
-                eprintln!("DEBUG: Loading CA certificate from: {}", ca_path);
+                ngx_log_debug_http!(request, "ngx-inference: Loading CA certificate from: {}", ca_path);
 
                 // Read the CA certificate file
                 let ca_cert = std::fs::read_to_string(ca_path).map_err(|e| {
@@ -268,41 +342,43 @@ pub fn epp_headers_blocking(
                 // Add the CA certificate to the TLS config
                 tls_config =
                     tls_config.ca_certificate(tonic::transport::Certificate::from_pem(&ca_cert));
-                eprintln!("DEBUG: Custom CA certificate loaded successfully");
+                ngx_log_debug_http!(request, "ngx-inference: Custom CA certificate loaded successfully");
             } else {
                 tls_config = tls_config.with_enabled_roots();
-                eprintln!("DEBUG: Using system CA certificate roots");
+                ngx_log_debug_http!(request, "ngx-inference: Using system CA certificate roots");
             }
 
-            eprintln!("DEBUG: Building TLS config");
-            eprintln!("DEBUG: Attempting gRPC connection...");
+            ngx_log_debug_http!(request, "ngx-inference: Building TLS config");
+            ngx_log_debug_http!(request, "ngx-inference: Attempting gRPC connection...");
 
             let tls_result = channel_builder.tls_config(tls_config).map_err(|e| {
-                eprintln!("ERROR: TLS config failed: {}", e);
+                ngx_log_debug_http!(request, "ngx-inference: TLS config failed: {}", e);
                 format!("tls config error: {e}")
             })?;
 
             let connect_result = tls_result.connect().await;
 
             match &connect_result {
-                Ok(_) => eprintln!("SUCCESS: TLS connection established"),
+                Ok(_) => {
+                    ngx_log_debug_http!(request, "ngx-inference: TLS connection established");
+                }
                 Err(e) => {
-                    eprintln!("ERROR: TLS connection failed: {}", e);
-                    eprintln!("  - Error type: {:?}", e);
-                    eprintln!("  - Endpoint: {}", endpoint);
-                    eprintln!("  - Domain: {}", domain);
+                    ngx_log_debug_http!(request, "ngx-inference: TLS connection failed: {}", e);
+                    ngx_log_debug_http!(request, "ngx-inference:   - Error type: {:?}", e);
+                    ngx_log_debug_http!(request, "ngx-inference:   - Endpoint: {}", endpoint);
+                    ngx_log_debug_http!(request, "ngx-inference:   - Domain: {}", domain);
 
                     // Additional diagnostic information
-                    eprintln!("DEBUG: Connection failure diagnostics:");
+                    ngx_log_debug_http!(request, "ngx-inference: Connection failure diagnostics:");
                     let error_str = format!("{}", e);
                     if error_str.contains("certificate") {
-                        eprintln!("  - Certificate-related error detected");
+                        ngx_log_debug_http!(request, "ngx-inference:   - Certificate-related error detected");
                     }
                     if error_str.contains("hostname") {
-                        eprintln!("  - Hostname verification error detected");
+                        ngx_log_debug_http!(request, "ngx-inference:   - Hostname verification error detected");
                     }
                     if error_str.contains("trust") {
-                        eprintln!("  - Trust/CA error detected");
+                        ngx_log_debug_http!(request, "ngx-inference:   - Trust/CA error detected");
                     }
                 }
             }
@@ -323,9 +399,10 @@ pub fn epp_headers_blocking(
 
         let mut client = ExternalProcessorClient::new(channel);
 
-        eprintln!("DEBUG: gRPC client created successfully");
-        eprintln!(
-            "DEBUG: Preparing EPP request with {} headers",
+        ngx_log_debug_http!(request, "ngx-inference: gRPC client created successfully");
+        ngx_log_debug_http!(
+            request,
+            "ngx-inference: Preparing EPP request with {} headers",
             headers.len()
         );
 
@@ -386,7 +463,7 @@ pub fn epp_headers_blocking(
 
         let outbound = tokio_stream::iter(vec![headers_msg]);
 
-        eprintln!("DEBUG: Making gRPC process() call...");
+        ngx_log_debug_http!(request, "ngx-inference: Making gRPC process() call...");
         let start_time = std::time::Instant::now();
 
         let process_result = client.process(outbound).await;
@@ -394,17 +471,18 @@ pub fn epp_headers_blocking(
         match &process_result {
             Ok(_) => {
                 let duration = start_time.elapsed();
-                eprintln!("SUCCESS: gRPC process() call completed in {:?}", duration);
+                ngx_log_debug_http!(request, "ngx-inference: gRPC process() call completed in {:?}", duration);
             }
             Err(e) => {
                 let duration = start_time.elapsed();
-                eprintln!(
-                    "ERROR: gRPC process() call failed after {:?}: {}",
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: gRPC process() call failed after {:?}: {}",
                     duration, e
                 );
-                eprintln!("  - Status: {:?}", e.code());
-                eprintln!("  - Message: {}", e.message());
-                eprintln!("  - Details: {:?}", e.details());
+                ngx_log_debug_http!(request, "ngx-inference:   - Status: {:?}", e.code());
+                ngx_log_debug_http!(request, "ngx-inference:   - Message: {}", e.message());
+                ngx_log_debug_http!(request, "ngx-inference:   - Details: {:?}", e.details());
             }
         }
 
@@ -428,20 +506,20 @@ pub fn epp_headers_blocking(
 
         match next {
             Ok(Some(resp)) => {
-                eprintln!("DEBUG: Received EPP response: {:?}", resp);
+                ngx_log_debug_http!(request, "ngx-inference: Received EPP response: {:?}", resp);
 
-                if let Some(val) = parse_response_for_header(&resp, &target_key_lower) {
-                    eprintln!("DEBUG: Found header '{}' with value: {}", header_name, val);
+                if let Some(val) = parse_response_for_header(request, &resp, &target_key_lower) {
+                    ngx_log_debug_http!(request, "ngx-inference: Found header '{}' with value: {}", header_name, val);
                     return Ok(Some(val));
                 } else {
-                    eprintln!("DEBUG: Header '{}' not found in response", header_name);
+                    ngx_log_debug_http!(request, "ngx-inference: Header '{}' not found in response", header_name);
                 }
             }
             Ok(None) => {
-                eprintln!("DEBUG: EPP response stream closed");
+                ngx_log_debug_http!(request, "ngx-inference: EPP response stream closed");
             }
             Err(e) => {
-                eprintln!("ERROR: EPP stream receive error: {}", e);
+                ngx_log_debug_http!(request, "ngx-inference: EPP stream receive error: {}", e);
                 return Err(format!("stream recv error: {e}"));
             }
         }
@@ -450,34 +528,37 @@ pub fn epp_headers_blocking(
         loop {
             match inbound.message().await {
                 Ok(Some(resp)) => {
-                    eprintln!("DEBUG: Received additional EPP response: {:?}", resp);
+                    ngx_log_debug_http!(request, "ngx-inference: Received additional EPP response: {:?}", resp);
 
-                    if let Some(val) = parse_response_for_header(&resp, &target_key_lower) {
-                        eprintln!(
-                            "DEBUG: Found header '{}' with value in additional response: {}",
+                    if let Some(val) = parse_response_for_header(request, &resp, &target_key_lower) {
+                        ngx_log_debug_http!(
+                            request,
+                            "ngx-inference: Found header '{}' with value in additional response: {}",
                             header_name, val
                         );
                         return Ok(Some(val));
                     } else {
-                        eprintln!(
-                            "DEBUG: Header '{}' not found in additional response",
+                        ngx_log_debug_http!(
+                            request,
+                            "ngx-inference: Header '{}' not found in additional response",
                             header_name
                         );
                     }
                 }
                 Ok(None) => {
-                    eprintln!("DEBUG: EPP response stream ended");
+                    ngx_log_debug_http!(request, "ngx-inference: EPP response stream ended");
                     break;
                 }
                 Err(e) => {
-                    eprintln!("ERROR: EPP stream receive error in continuation: {}", e);
+                    ngx_log_debug_http!(request, "ngx-inference: EPP stream receive error in continuation: {}", e);
                     return Err(format!("stream recv error: {e}"));
                 }
             }
         }
 
-        eprintln!(
-            "DEBUG: EPP processing completed, header '{}' not found in any response",
+        ngx_log_debug_http!(
+            request,
+            "ngx-inference: EPP processing completed, header '{}' not found in any response",
             header_name
         );
         Ok(None)

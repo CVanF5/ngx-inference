@@ -32,6 +32,10 @@ while [[ $# -gt 0 ]]; do
             ENVIRONMENT="local"
             shift
             ;;
+        --kind)
+            ENVIRONMENT="kind"
+            shift
+            ;;
         --help|-h)
             SHOW_HELP=true
             shift
@@ -45,11 +49,12 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ "$SHOW_HELP" == "true" ]]; then
-    echo "Usage: $0 [--local|--docker] [--help]"
+    echo "Usage: $0 [--local|--docker|--kind] [--help]"
     echo ""
     echo "Options:"
     echo "  --local    Setup for local nginx development (default)"
     echo "  --docker   Setup for Docker-based testing"
+    echo "  --kind     Setup for KIND-based testing"
     echo "  --help     Show this help message"
     echo ""
     exit 0
@@ -327,6 +332,42 @@ elif [[ "$ENVIRONMENT" == "docker" ]]; then
         echo -e "${RED}✗ docker-compose.yml not found in tests/${NC}"
         tools_missing=1
     fi
+
+elif [[ "$ENVIRONMENT" == "kind" ]]; then
+    echo -e "${YELLOW}Checking KIND development requirements...${NC}"
+
+    # Check kind
+    if command -v kind >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ kind found${NC}"
+    else
+        echo -e "${RED}✗ kind not found. Install from: https://kind.sigs.k8s.io/docs/user/quick-start/#installation${NC}"
+        tools_missing=1
+    fi
+
+    # Check kubectl
+    if command -v kubectl >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ kubectl found${NC}"
+    else
+        echo -e "${RED}✗ kubectl not found. Install from: https://kubernetes.io/docs/tasks/tools/${NC}"
+        tools_missing=1
+    fi
+
+    # Check helm
+    if command -v helm >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ helm found${NC}"
+    else
+        echo -e "${RED}✗ helm not found. Install from: https://helm.sh/docs/intro/install/${NC}"
+        tools_missing=1
+    fi
+
+    # Check docker (needed for kind)
+    if command -v docker >/dev/null 2>&1; then
+        echo -e "${GREEN}✓ docker found${NC}"
+    else
+        echo -e "${RED}✗ docker not found. Install from: https://docs.docker.com/get-docker/${NC}"
+        tools_missing=1
+    fi
+
 fi
 
 echo ""
@@ -380,6 +421,18 @@ if [[ $tools_missing -eq 0 ]]; then
         echo ""
         echo -e "${YELLOW}To start services manually:${NC}"
         echo "  docker compose -f tests/docker-compose.yml up -d"
+
+    elif [[ "$ENVIRONMENT" == "kind" ]]; then
+        echo -e "${GREEN}Ready for KIND-based testing!${NC}"
+        echo ""
+        echo -e "${YELLOW}To run KIND tests:${NC}"
+        echo "  make test-kind               # Run tests against reference EPP in kind cluster"
+        echo "  make start-kind              # Create kind cluster and deploy components"
+        echo "  make stop                    # Stop all services including kind cluster"
+        echo ""
+        echo -e "${YELLOW}To manage cluster manually:${NC}"
+        echo "  ./tests/kind-ngf/scripts/setup.sh    # Setup cluster and deploy"
+        echo "  ./tests/kind-ngf/scripts/test-kind.sh # Run tests"
     fi
 
 else
@@ -406,11 +459,16 @@ else
         fi
     fi
 
-    echo "  You can also try the other environment:"
+    echo "  You can also try other environments:"
     if [[ "$ENVIRONMENT" == "local" ]]; then
         echo "    $0 --docker    # Setup for Docker-based testing"
-    else
+        echo "    $0 --kind      # Setup for KIND-based testing"
+    elif [[ "$ENVIRONMENT" == "docker" ]]; then
         echo "    $0 --local     # Setup for local development"
+        echo "    $0 --kind      # Setup for KIND-based testing"
+    elif [[ "$ENVIRONMENT" == "kind" ]]; then
+        echo "    $0 --local     # Setup for local development"
+        echo "    $0 --docker    # Setup for Docker-based testing"
     fi
 fi
 
