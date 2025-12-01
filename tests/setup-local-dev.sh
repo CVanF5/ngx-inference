@@ -474,3 +474,4 @@ fi
 
 exit $tools_missing
 # ASCII-cleaned to eliminate all Unicode and tab issues - Mon  1 Dec 2025 20:45:08 GMT
+# Final tab fix - Mon  1 Dec 2025 20:54:41 GMT

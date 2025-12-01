@@ -321,7 +321,7 @@ main() {
         echo -e "${GREEN} Kind cluster tests completed successfully! ${NC}"
         return 0
     else
-        echo -e "${RED} $total_failed scenario(s) failed${NC}"
+        echo -e "${RED}✗ $total_failed scenario(s) failed${NC}"
         echo ""
         echo "For detailed logs:"
         echo "  kubectl logs -n $NAMESPACE -l app=nginx-inference"
@@ -336,3 +336,4 @@ main() {
 
 main "$@"
 # ASCII-cleaned to eliminate all Unicode and tab issues - Mon  1 Dec 2025 20:45:11 GMT
+# Final tab fix - Mon  1 Dec 2025 20:54:44 GMT
