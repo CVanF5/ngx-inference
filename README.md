@@ -6,7 +6,7 @@ Overview
 This project provides a native NGINX module (built with ngx-rust) that implements the Gateway API Inference Extension using Envoy's `ext_proc` protocol over gRPC.
 
 It implements two standard components:
-- **Endpoint Picker Processor (EPP)**: Headers-only exchange following the Gateway API Inference Extension specification to obtain upstream endpoint selection and expose endpoints via the `$inference_upstream` NGINX variable.
+- **Endpoint Picker Processor (EPP)**: gRPC exchange following the Gateway API Inference Extension specification to obtain upstream endpoint selection and expose endpoints via the `$inference_upstream` NGINX variable.
 - **Body-Based Routing (BBR)**: Direct in-module implementation that extracts model names from JSON request bodies and injects model headers, following the OpenAI API specification and Gateway API Inference Extension standards.
 
 Reference docs:

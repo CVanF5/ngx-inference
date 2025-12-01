@@ -21,6 +21,10 @@ jobs:
       run: |
         make lint
 
+    - name: Start Docker Environment
+      run: |
+        make start-docker
+
     - name: Run Docker tests
       run: |
         make test-docker

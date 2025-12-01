@@ -148,7 +148,11 @@ create_config_from_template() {
         local generate_script="$(pwd)/tests/generate-config.sh"
         if [[ -f "$generate_script" ]]; then
             # Use the generate-config.sh script which handles TLS and endpoints properly
-            "$generate_script" -e local -o "$output_file" -s "$config_name"
+            local env="local"
+            if [[ "${DOCKER_ENVIRONMENT:-}" == "main" ]]; then
+                env="docker"
+            fi
+            "$generate_script" -e "$env" -o "$output_file" -s "$config_name"
         else
             echo -e "${YELLOW}Warning: generate-config.sh not found, falling back to manual template replacement${NC}"
             # Fallback to manual replacement if generate-config.sh is missing
@@ -171,7 +175,11 @@ create_config_from_template() {
         # For template-only generation (no server config), use generate-config.sh without -s option
         local generate_script="$(pwd)/tests/generate-config.sh"
         if [[ -f "$generate_script" ]]; then
-            "$generate_script" -e local -o "$output_file"
+            local env="local"
+            if [[ "${DOCKER_ENVIRONMENT:-}" == "main" ]]; then
+                env="docker"
+            fi
+            "$generate_script" -e "$env" -o "$output_file"
         else
             echo -e "${YELLOW}Warning: generate-config.sh not found, falling back to manual template replacement${NC}"
             # Fallback to manual replacement

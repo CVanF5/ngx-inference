@@ -4,64 +4,33 @@ This directory contains test scripts and utilities for validating the ngx-infere
 
 ## Test Scripts
 
-### `test_config.sh`
+### `test-config.sh`
 
-Main test runner that validates BBR (Body-Based Routing) and EPP (External Processing Pipeline) module configurations. This script supports both local nginx testing and Docker-based testing:
+Main test runner that validates BBR (Body-Based Routing) and EPP (External Processing Pipeline) module configurations. This script supports three testing environments:
 
 **Configuration Test Matrix:**
 - **BBR ON + EPP OFF**: Tests model extraction only
-- **BBR OFF + EPP ON**: Tests upstream selection only
+- **BBR OFF + EPP ON**: Tests upstream selection only  
 - **BBR ON + EPP ON**: Tests both modules active
 - **BBR OFF + EPP OFF**: Tests no processing (baseline)
 
 **Execution Modes:**
 - **Local Mode**: Uses locally compiled nginx module with local backend services
 - **Docker Mode**: Uses containerized environment via `docker-compose.yml`
+- **Kind Mode**: Uses Kubernetes-in-Docker with reference EPP implementation
 
 #### Usage
 
 ```bash
-# Local nginx testing (default)
-./tests/test_config.sh
-
-# Docker-based testing (set via environment variable)
-DOCKER_ENVIRONMENT=main ./tests/test_config.sh
-
-# Or use Makefile targets
+# Use Makefile targets (recommended)
 make test-local    # Local nginx testing
 make test-docker   # Docker-based testing
+make test-kind     # Kubernetes testing in Kind
+
+# Or run directly
+./tests/test-config.sh                    # Local mode
+DOCKER_ENVIRONMENT=main ./tests/test-config.sh  # Docker mode
 ```
-
-### `test_large_body.sh`
-
-Tests the BBR (Body-Based Routing) module with various payload sizes to validate memory and file buffering behavior:
-
-- **Small body (< 16KB)**: Tests memory buffering
-- **Medium body (> 16KB)**: Tests file buffering
-- **Large body (~9MB)**: Tests near BBR 10MB limit
-- **Very large body (~12MB)**: Tests BBR limit enforcement
-
-#### Usage
-
-```bash
-# Run from project root (requires services to be running)
-./tests/test_large_body.sh
-
-# Or run directly (requires services to be running)
-# ./tests/test_large_body.sh
-```
-
-#### Test Scenarios
-
-1. **Memory Buffered**: Small JSON payload processed in memory
-2. **File Buffered**: Medium payload that exceeds `client_body_buffer_size` and gets written to temporary files
-3. **Large Payload**: ~9MB payload testing BBR module's ability to handle large file-backed requests
-4. **Oversized Payload**: ~12MB payload that should be rejected by BBR's 10MB limit
-
-#### Expected Results
-
-- Small/Medium/Large payloads: ✅ Model name extracted successfully
-- Oversized payloads: ✅ Rejected with appropriate error (502 Bad Gateway or 413 Payload Too Large)
 
 ## Test Infrastructure
 
@@ -73,15 +42,29 @@ Main Docker Compose configuration providing the test environment:
 - **echo-server**: Node.js service for request inspection and header validation
 - **mock-extproc**: Mock gRPC External Processing service for EPP module testing
 
+### Kind Testing Environment (`kind-ngf/`)
+
+Kubernetes-in-Docker testing infrastructure with:
+
+- **Kind cluster**: Lightweight Kubernetes cluster for testing
+- **Reference EPP**: Production-ready External Processing implementation
+- **TLS Support**: Tests TLS-enabled gRPC communication
+- **Real-world scenarios**: Tests against actual Kubernetes deployment patterns
+
+#### Kind Directory Structure
+- `cluster/`: Kubernetes cluster configuration
+- `manifests/`: Deployment manifests for nginx and EPP services
+- `scripts/`: Setup and testing automation scripts
+
 ### `setup-local-dev.sh`
 
-Comprehensive development environment setup and validation script:
+Comprehensive development environment setup and validation script supporting all three testing environments:
 
-- Supports both local nginx development and Docker-based testing
-- Validates required tools (nginx, node, cargo for local; docker, docker-compose for Docker)
-- Checks for necessary dependencies and provides installation guidance
-- Creates necessary directories
-- Provides guidance for development workflow
+- **Local Development**: Validates nginx, Node.js, Rust toolchain
+- **Docker Environment**: Validates Docker and docker-compose
+- **Kind Environment**: Validates kubectl, kind, and Kubernetes tools
+- Provides installation guidance for missing dependencies
+- Creates necessary directories and validates configurations
 
 #### Usage
 
@@ -92,6 +75,9 @@ Comprehensive development environment setup and validation script:
 
 # Setup for Docker-based testing
 ./tests/setup-local-dev.sh --docker
+
+# Setup for Kind/Kubernetes testing
+./tests/setup-local-dev.sh --kind
 
 # Show help
 ./tests/setup-local-dev.sh --help
@@ -176,17 +162,44 @@ The Docker Compose stack includes:
 
 ## Available Make Targets
 
-- `make setup-local` - Setup local development environment
-- `make setup-docker` - Setup Docker-based testing environment
-- `make build` - Build the ngx-inference module
-- `make start-local` - Start local nginx with compiled module
-- `make start-dev` - Start Docker services for development
-- `make test` - Run tests (local by default, Docker if TEST_ENV=docker)
+The Makefile provides comprehensive workflow automation for all testing environments:
+
+### Quick Start Targets
+- `make start-local` - Setup, build, and start local development environment
+- `make start-docker` - Setup and start full Docker stack  
+- `make start-kind` - Setup, create Kind cluster, and deploy reference EPP
+
+### Setup Targets (automatically run by start targets)
+- `make setup-local` - Validate local development environment
+- `make setup-docker` - Validate Docker development environment  
+- `make setup-kind` - Validate Kind development environment
+
+### Test Targets
 - `make test-local` - Run configuration tests with local nginx
 - `make test-docker` - Run configuration tests with Docker
+- `make test-kind` - Run tests against TLS-enabled reference EPP in Kind cluster
 
-- `make stop` - Stop running services
+### Build and Utility Targets
+- `make build` - Build the ngx-inference module and mock server
+- `make check` - Quick compilation check without full build
+- `make lint` - Run Rust linting and formatting checks
+- `make stop` - Stop all services (local, Docker, and Kind)
 - `make clean` - Clean build artifacts and temporary files
+
+### Example Workflows
+```bash
+# Local development workflow
+make start-local && make test-local
+
+# Docker workflow  
+make start-docker && make test-docker
+
+# Kind/Kubernetes workflow
+make start-kind && make test-kind
+
+# Stop everything
+make stop
+```
 
 ## Troubleshooting
 
@@ -221,50 +234,66 @@ The Docker Compose stack includes:
 
 ## Test Requirements
 
+### Local Environment
+- nginx with dynamic module support
+- Node.js (for echo server)
+- Rust/Cargo toolchain
+- `curl`, `jq`, and basic Unix utilities
+
 ### Docker Environment
 - Docker and docker-compose
 - `curl` and `jq` on the host system
 
-### Local Environment
-- nginx with dynamic module support
-- Node.js (for local echo server)
-- Rust/Cargo toolchain
-- `curl`, `jq`, and `nc` (netcat)
+### Kind Environment  
+- Docker
+- kubectl
+- kind (Kubernetes in Docker)
+- `curl` and `jq` on the host system
 
 ## Quick Start
 
 ### Docker Environment (Recommended)
 ```bash
-# Build and start Docker services
-make start-dev
+# Setup, build and start Docker services
+make start-docker
 
 # Run configuration tests
 make test-docker
-
-# Run BBR functionality tests directly
-# ./tests/test_large_body.sh
 ```
 
-### Local Development Environment
+### Local Development Environment  
 ```bash
-# Setup local development environment
-make setup-local
-
-# Start local nginx with compiled module
+# Setup, build and start local services
 make start-local
 
 # Run configuration tests
 make test-local
-
-# Run BBR functionality tests directly
-# ./tests/test_large_body.sh
 ```
+
+### Kind/Kubernetes Environment
+```bash
+# Setup Kind cluster and deploy reference EPP
+make start-kind
+
+# Run tests against TLS-enabled EPP
+make test-kind
+```
+
+## Testing Environments Comparison
+
+| Environment | Use Case | Benefits | Requirements |
+|-------------|----------|----------|--------------|
+| **Local** | Development, debugging | Fast iteration, easy debugging | nginx, Node.js, Rust |
+| **Docker** | Integration testing | Consistent environment, easy setup | Docker, docker-compose |
+| **Kind** | Production validation | Real Kubernetes, TLS, production EPP | kubectl, kind, Docker |
 
 ## Notes
 
-- **Configuration Testing**: `test_config.sh` uses dynamic nginx configuration reloading via `nginx -s reload`
+- **Three Testing Environments**: Local development, Docker containerization, and Kind/Kubernetes for production validation
+- **Configuration Testing**: `test-config.sh` uses dynamic nginx configuration reloading via `nginx -s reload`
 - **State Management**: Each test restores the original configuration when complete
 - **Output**: Tests include colored output for better readability
-- **Networking**: All tests work against nginx on `localhost:8081` (both Docker and local)
-- **Mock Services**: Mock gRPC EPP service on `mock-extproc:9001` provides realistic upstream selection
-- **Echo Server**: Provides request inspection and header validation at `echo-server:3000`
+- **Networking**: All tests work against nginx on `localhost:8081` (local and Docker) or cluster IP (Kind)
+- **Mock Services**: Mock gRPC EPP service provides realistic upstream selection in local/Docker environments
+- **Echo Server**: Provides request inspection and header validation
+- **Production EPP**: Kind environment uses a reference External Processing implementation with TLS support

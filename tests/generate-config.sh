@@ -114,7 +114,15 @@ elif [[ "$ENVIRONMENT" == "kind" ]]; then
     # In Kubernetes, log to stdout/stderr for kubectl logs to work
     ERROR_LOG="/dev/stderr"
     ACCESS_LOG="/dev/stdout"
+elif [[ "$ENVIRONMENT" == "docker" ]]; then
+    MODULE_PATH="/usr/lib/nginx/modules/libngx_inference.so"
+    MIMETYPES_PATH="/etc/nginx/mime.types"
+    UPSTREAM_HOST="echo-server:80"
+    EPP_HOST="mock-epp:9001"
+    ERROR_LOG="/tmp/nginx-ngx-inference-error.log"
+    ACCESS_LOG="/tmp/nginx-ngx-inference-access.log"
 else
+    # Default/fallback configuration
     MODULE_PATH="/usr/lib/nginx/modules/libngx_inference.so"
     MIMETYPES_PATH="/etc/nginx/mime.types"
     UPSTREAM_HOST="echo-server:80"
@@ -169,8 +177,9 @@ if [[ -n "$SERVER_CONFIG" ]]; then
         sed "s|127.0.0.1:9001|$EPP_HOST|g" | \
         sed "s|mock-extproc:9001|$EPP_HOST|g")
 
-    # For local environment, disable TLS and remove CA file directive
-    if [[ "$ENVIRONMENT" == "local" ]]; then
+    # For local and docker environments, disable TLS and remove CA file directive
+    # Only kind environment uses TLS with proper certificates
+    if [[ "$ENVIRONMENT" == "local" || "$ENVIRONMENT" == "docker" ]]; then
         SERVER_CONFIG_CONTENT=$(echo "$SERVER_CONFIG_CONTENT" | \
             sed "s|inference_epp_tls on;|inference_epp_tls off;|g" | \
             sed "/inference_epp_ca_file/d" | \
