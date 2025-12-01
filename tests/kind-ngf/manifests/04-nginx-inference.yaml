@@ -60,6 +60,7 @@ data:
                 
                 # TLS configuration for EPP connection with trusted certificate
                 inference_epp_tls on;
+                inference_epp_ca_file /etc/epp-tls/tls.crt;
 
                 # Proxy to the upstream selected by EPP
                 proxy_pass http://$inference_upstream$request_uri;

@@ -122,9 +122,12 @@ generate_tls_certificate() {
     
     # Generate self-signed certificate
     # Using SAN for better compatibility with modern TLS clients
-    openssl req -new -x509 -key "$key_file" -out "$cert_file" -days 365 \
+    openssl req -new -x509 -key "$key_file" -out "$cert_file" -days 1 \
         -subj "/C=US/ST=CA/L=TestCity/O=TestOrg/OU=TestUnit/CN=vllm-llama3-8b-instruct-epp.${NAMESPACE}.svc.cluster.local" \
-        -addext "subjectAltName=DNS:vllm-llama3-8b-instruct-epp.${NAMESPACE}.svc.cluster.local,DNS:localhost,IP:127.0.0.1"
+        -addext "subjectAltName=DNS:vllm-llama3-8b-instruct-epp.${NAMESPACE}.svc.cluster.local,DNS:vllm-llama3-8b-instruct-epp,DNS:localhost,IP:127.0.0.1" \
+        -addext "basicConstraints=CA:FALSE" \
+        -addext "keyUsage=digitalSignature,keyEncipherment" \
+        -addext "extendedKeyUsage=serverAuth"
     
     # Create Kubernetes secret
     kubectl create secret tls epp-tls-secret \

@@ -52,6 +52,7 @@ impl EppProcessor {
             upstream_header_str,
             hdrs,
             conf.epp_tls,
+            conf.epp_ca_file.as_deref(),
         ) {
             Ok(Some(val)) => {
                 // Write upstream selection header for variable consumption.
@@ -60,7 +61,9 @@ impl EppProcessor {
             Ok(None) => {
                 // No upstream provided
             }
-            Err(_err) => {
+            Err(err) => {
+                // Log the actual error for debugging
+                eprintln!("EPP gRPC error: {}", err);
                 return Err("epp grpc error");
             }
         }

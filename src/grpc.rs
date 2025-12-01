@@ -113,6 +113,7 @@ pub fn epp_headers_blocking(
     header_name: &str,
     headers: Vec<(String, String)>,
     use_tls: bool,
+    ca_file: Option<&str>,
 ) -> Result<Option<String>, String> {
     let target_key_lower = header_name.to_ascii_lowercase();
     let uri = normalize_endpoint(endpoint, use_tls);
@@ -123,17 +124,81 @@ pub fn epp_headers_blocking(
 
         // Build the channel with appropriate TLS configuration
         let channel = if use_tls {
-            // SECURE MODE: Use standard TLS validation with trusted certificates
+            // SECURE MODE: Configure TLS with custom CA if provided, otherwise use system roots
             use tonic::transport::ClientTlsConfig;
 
-            let tls_config = ClientTlsConfig::new().with_enabled_roots();
+            // Extract domain from endpoint for TLS verification
+            let domain = if let Some(colon_pos) = endpoint.rfind(':') {
+                endpoint[..colon_pos].to_string()
+            } else {
+                endpoint.to_string()
+            };
 
-            channel_builder
-                .tls_config(tls_config)
-                .map_err(|e| format!("tls config error: {e}"))?
-                .connect()
-                .await
-                .map_err(|e| format!("connect error: {e}"))?
+            eprintln!("DEBUG: TLS Configuration:");
+            eprintln!("  - Endpoint: {}", endpoint);
+            eprintln!("  - URI: {}", uri);
+            eprintln!("  - Extracted domain: '{}'", domain);
+            eprintln!("  - CA file: {:?}", ca_file);
+
+            let mut tls_config = ClientTlsConfig::new().domain_name(&domain);
+
+            // Use custom CA certificate if provided, otherwise use system roots
+            if let Some(ca_path) = ca_file {
+                eprintln!("DEBUG: Loading CA certificate from: {}", ca_path);
+
+                // Read the CA certificate file
+                let ca_cert = std::fs::read_to_string(ca_path).map_err(|e| {
+                    format!("Failed to read CA certificate file '{}': {}", ca_path, e)
+                })?;
+
+                // Add the CA certificate to the TLS config
+                tls_config =
+                    tls_config.ca_certificate(tonic::transport::Certificate::from_pem(&ca_cert));
+                eprintln!("DEBUG: Custom CA certificate loaded successfully");
+            } else {
+                tls_config = tls_config.with_enabled_roots();
+                eprintln!("DEBUG: Using system CA certificate roots");
+            }
+
+            eprintln!("DEBUG: Building TLS config");
+            eprintln!("DEBUG: Attempting gRPC connection...");
+
+            let tls_result = channel_builder.tls_config(tls_config).map_err(|e| {
+                eprintln!("ERROR: TLS config failed: {}", e);
+                format!("tls config error: {e}")
+            })?;
+
+            let connect_result = tls_result.connect().await;
+
+            match &connect_result {
+                Ok(_) => eprintln!("SUCCESS: TLS connection established"),
+                Err(e) => {
+                    eprintln!("ERROR: TLS connection failed: {}", e);
+                    eprintln!("  - Error type: {:?}", e);
+                    eprintln!("  - Endpoint: {}", endpoint);
+                    eprintln!("  - Domain: {}", domain);
+
+                    // Additional diagnostic information
+                    eprintln!("DEBUG: Connection failure diagnostics:");
+                    let error_str = format!("{}", e);
+                    if error_str.contains("certificate") {
+                        eprintln!("  - Certificate-related error detected");
+                    }
+                    if error_str.contains("hostname") {
+                        eprintln!("  - Hostname verification error detected");
+                    }
+                    if error_str.contains("trust") {
+                        eprintln!("  - Trust/CA error detected");
+                    }
+                }
+            }
+
+            connect_result.map_err(|e| {
+                format!(
+                    "connect error (endpoint: {}, domain: {}): {e}",
+                    endpoint, domain
+                )
+            })?
         } else {
             // No TLS
             channel_builder
@@ -143,6 +208,12 @@ pub fn epp_headers_blocking(
         };
 
         let mut client = ExternalProcessorClient::new(channel);
+
+        eprintln!("DEBUG: gRPC client created successfully");
+        eprintln!(
+            "DEBUG: Preparing EPP request with {} headers",
+            headers.len()
+        );
 
         // EPP: For headers-only exchange, we still need to indicate body mode
         // but we mark end_of_stream=true on headers to indicate no body follows
@@ -201,9 +272,29 @@ pub fn epp_headers_blocking(
 
         let outbound = tokio_stream::iter(vec![headers_msg]);
 
-        let mut inbound = client
-            .process(outbound)
-            .await
+        eprintln!("DEBUG: Making gRPC process() call...");
+        let start_time = std::time::Instant::now();
+
+        let process_result = client.process(outbound).await;
+
+        match &process_result {
+            Ok(_) => {
+                let duration = start_time.elapsed();
+                eprintln!("SUCCESS: gRPC process() call completed in {:?}", duration);
+            }
+            Err(e) => {
+                let duration = start_time.elapsed();
+                eprintln!(
+                    "ERROR: gRPC process() call failed after {:?}: {}",
+                    duration, e
+                );
+                eprintln!("  - Status: {:?}", e.code());
+                eprintln!("  - Message: {}", e.message());
+                eprintln!("  - Details: {:?}", e.details());
+            }
+        }
+
+        let mut inbound = process_result
             .map_err(|e| format!("rpc error: {e}"))?
             .into_inner();
 

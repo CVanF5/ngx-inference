@@ -17,6 +17,7 @@ pub struct ModuleConfig {
     pub epp_failure_mode_allow: bool, // fail-open
     pub epp_header_name: String,      // default "X-Inference-Upstream"
     pub epp_tls: bool,                // use TLS for connection
+    pub epp_ca_file: Option<String>,  // CA certificate file path for TLS verification
 }
 
 impl Default for ModuleConfig {
@@ -34,6 +35,7 @@ impl Default for ModuleConfig {
             epp_failure_mode_allow: false,
             epp_header_name: "X-Inference-Upstream".to_string(),
             epp_tls: false,
+            epp_ca_file: None,
         }
     }
 }

@@ -406,8 +406,35 @@ extern "C" fn ngx_http_inference_set_epp_tls(
     core::NGX_CONF_OK
 }
 
+// inference_epp_ca_file /path/to/ca.crt
+extern "C" fn ngx_http_inference_set_epp_ca_file(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+
+        let path = match args[1].to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                ngx_conf_log_error!(
+                    NGX_LOG_EMERG,
+                    cf,
+                    "`inference_epp_ca_file` argument is not utf-8"
+                );
+                return core::NGX_CONF_ERROR;
+            }
+        };
+
+        conf.epp_ca_file = Some(path.to_string());
+    }
+    core::NGX_CONF_OK
+}
+
 // NGINX directives table
-static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 12] = [
+static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 13] = [
     ngx_command_t {
         name: ngx_string!("inference_bbr"),
         type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
@@ -503,6 +530,15 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 12] = [
         type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
             as ngx_uint_t,
         set: Some(ngx_http_inference_set_epp_tls),
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
+        name: ngx_string!("inference_epp_ca_file"),
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
+        set: Some(ngx_http_inference_set_epp_ca_file),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
