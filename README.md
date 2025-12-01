@@ -48,11 +48,15 @@ http {
             inference_bbr on;
             inference_bbr_max_body_size 52428800; # 50MB for AI workloads
             inference_bbr_default_model "gpt-3.5-turbo"; # Default model when none found
+            inference_bbr_failure_mode_allow off; # Fail-closed for production
 
             # Configure the inference module for EPP (Endpoint Picker Processor)
             inference_epp on;
             inference_epp_endpoint "epp-server:9001"; # EPP service name
             inference_epp_timeout_ms 5000;
+            inference_epp_failure_mode_allow off; # Fail-closed for production
+            # inference_epp_tls off; # Disable TLS for development/testing
+            # inference_epp_ca_file /etc/ssl/certs/ca.crt; # Custom CA file
 
             # Proxy to the chosen upstream (will be determined by EPP)
             # Use the $inference_upstream variable set by the module
@@ -73,6 +77,7 @@ Current behavior and defaults
   - Directive `inference_bbr_header_name` configures the model header name to inject (default `X-Gateway-Model-Name`).
   - Directive `inference_bbr_max_body_size` sets maximum body size for BBR processing in bytes (default 10MB).
   - Directive `inference_bbr_default_model` sets the default model value when no model is found in request body (default `unknown`).
+  - Directive `inference_bbr_failure_mode_allow on|off` controls fail-open vs fail-closed behavior (default `off`).
   - Hybrid memory/file support: small bodies stay in memory, large bodies are read from NGINX temporary files.
   - Memory allocation pre-allocation is capped at 1MB to avoid large upfront allocations. Actual in-memory accumulation may grow up to the configured `inference_bbr_max_body_size` limit; large payloads spill to disk and are read incrementally.
 
@@ -81,6 +86,9 @@ Current behavior and defaults
   - Directive `inference_epp_endpoint` sets the gRPC endpoint for standard EPP ext-proc server communication.
   - Directive `inference_epp_header_name` configures the upstream header name to read from EPP responses (default `X-Inference-Upstream`).
   - Directive `inference_epp_timeout_ms` sets the gRPC timeout for EPP communication (default `200ms`).
+  - Directive `inference_epp_failure_mode_allow on|off` controls fail-open vs fail-closed behavior (default `off`).
+  - Directive `inference_epp_tls on|off` enables TLS for gRPC connections (default `on`).
+  - Directive `inference_epp_ca_file /path/to/ca.crt` specifies CA certificate file path for TLS verification (optional).
   - EPP follows the Gateway API Inference Extension specification: performs headers-only exchange, reads header mutations from responses, and sets the upstream header for endpoint selection.
   - The `$inference_upstream` NGINX variable exposes the EPP-selected endpoint (read from the header configured by `inference_epp_header_name`) and can be used in `proxy_pass` directives.
 
@@ -103,7 +111,9 @@ Notes and assumptions
   - EPP should return an endpoint hint via header mutation. This module reads a configurable upstream header via `inference_epp_header_name` (default `X-Inference-Upstream`) and exposes its value as `$inference_upstream`.
 
 - TLS:
-  - Current implementation uses insecure/plaintext gRPC channels. The EPP project notes TLS support is a known issue still under discussion. Once TLS configuration is available, this module can be extended to support secure gRPC channels.
+  - TLS support for gRPC connections is enabled by default via the `inference_epp_tls` directive.
+  - Use `inference_epp_ca_file` to specify a custom CA certificate file for TLS verification.
+  - TLS can be disabled by setting `inference_epp_tls off` if needed for development or testing.
 
 - Body processing:
   - EPP follows the standard Gateway API specification with headers-only mode (no body streaming).
@@ -156,8 +166,8 @@ Roadmap
 - Validate EPP and BBR implementations against Gateway API Inference Extension conformance tests.
 - Align exact header names and semantics to the upstream specification and reference implementations.
 - Validate large body handling and back-pressure for BBR; refine chunked reads/writes and resource usage for very large payloads.
-- TLS support for gRPC once available in the Gateway API specification.
 - Connection pooling and caching for improved performance at scale.
+- Enhanced TLS configuration options (client certificates, cipher suites, etc.).
 
 License
 -------
