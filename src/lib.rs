@@ -9,9 +9,7 @@ use ngx::ffi::{
 };
 use ngx::http::{self, HttpModule};
 use ngx::http::{HttpModuleLocationConf, HttpModuleMainConf, NgxHttpCoreModule};
-use ngx::{
-    http_request_handler, http_variable_get, ngx_conf_log_error, ngx_log_debug_http, ngx_string,
-};
+use ngx::{http_request_handler, http_variable_get, ngx_conf_log_error, ngx_string};
 
 /* Internal modules for gRPC ext-proc client and generated protos */
 pub mod grpc;
@@ -691,11 +689,22 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
     // Stage 2: EPP (Endpoint Picker Processor) - headers-only exchange for upstream selection
     if conf.epp_enable {
         match EppProcessor::process_request(request, conf) {
-            Ok(()) => {
-                // upstream header set
+            core::Status::NGX_OK => {
+                // EPP processed successfully, continue
             }
-            Err(err) => {
-                ngx_log_debug_http!(request, "ngx-inference: EPP error: {}", err);
+            core::Status::NGX_DECLINED => {
+                // EPP not needed or skipped, continue
+            }
+            core::Status::NGX_ERROR => {
+                unsafe {
+                    let msg = b"ngx-inference: EPP processing failed\0";
+                    ngx::ffi::ngx_log_error_core(
+                        ngx::ffi::NGX_LOG_INFO as ngx::ffi::ngx_uint_t,
+                        request.as_mut().connection.as_ref().unwrap().log,
+                        0,
+                        cstr_ptr(msg.as_ptr()),
+                    );
+                }
                 if !conf.epp_failure_mode_allow {
                     // Fail closed
                     unsafe {
@@ -710,6 +719,9 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
                     }
                     return http::HTTPStatus::BAD_GATEWAY.into();
                 }
+            }
+            _ => {
+                // Other status, continue processing
             }
         }
     }

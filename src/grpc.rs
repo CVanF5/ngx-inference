@@ -12,6 +12,54 @@ use std::sync::OnceLock;
 
 use tonic::transport::Channel;
 
+// Helper macro for info-level logging in gRPC operations
+macro_rules! ngx_log_info_http {
+    ($request:expr, $($arg:tt)*) => {
+        unsafe {
+            let msg = format!($($arg)*);
+            let c_msg = std::ffi::CString::new(msg).unwrap();
+            ngx::ffi::ngx_log_error_core(
+                ngx::ffi::NGX_LOG_INFO as ngx::ffi::ngx_uint_t,
+                ($request.connection().as_ref().unwrap().log),
+                0,
+                c_msg.as_ptr(),
+            );
+        }
+    };
+}
+
+// Helper macro for warning-level logging in gRPC operations
+macro_rules! ngx_log_warn_http {
+    ($request:expr, $($arg:tt)*) => {
+        unsafe {
+            let msg = format!($($arg)*);
+            let c_msg = std::ffi::CString::new(msg).unwrap();
+            ngx::ffi::ngx_log_error_core(
+                ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
+                ($request.connection().as_ref().unwrap().log),
+                0,
+                c_msg.as_ptr(),
+            );
+        }
+    };
+}
+
+// Helper macro for error-level logging in gRPC operations
+macro_rules! ngx_log_error_http {
+    ($request:expr, $($arg:tt)*) => {
+        unsafe {
+            let msg = format!($($arg)*);
+            let c_msg = std::ffi::CString::new(msg).unwrap();
+            ngx::ffi::ngx_log_error_core(
+                ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
+                ($request.connection().as_ref().unwrap().log),
+                0,
+                c_msg.as_ptr(),
+            );
+        }
+    };
+}
+
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {
@@ -290,6 +338,81 @@ fn parse_response_for_header(
     None
 }
 
+fn parse_response_for_header_async(
+    resp: &ProcessingResponse,
+    target_key_lower: &str,
+) -> Option<String> {
+    use envoy::service::ext_proc::v3::processing_response;
+
+    match &resp.response {
+        Some(processing_response::Response::RequestHeaders(hdrs)) => {
+            if let Some(common) = &hdrs.response {
+                if let Some(hm) = &common.header_mutation {
+                    return extract_header_from_mutation_async(hm, target_key_lower);
+                }
+            }
+        }
+        Some(processing_response::Response::ResponseHeaders(hdrs)) => {
+            if let Some(common) = &hdrs.response {
+                if let Some(hm) = &common.header_mutation {
+                    return extract_header_from_mutation_async(hm, target_key_lower);
+                }
+            }
+        }
+        Some(processing_response::Response::RequestBody(body)) => {
+            if let Some(common) = &body.response {
+                if let Some(hm) = &common.header_mutation {
+                    return extract_header_from_mutation_async(hm, target_key_lower);
+                }
+            }
+        }
+        Some(processing_response::Response::ResponseBody(body)) => {
+            if let Some(common) = &body.response {
+                if let Some(hm) = &common.header_mutation {
+                    return extract_header_from_mutation_async(hm, target_key_lower);
+                }
+            }
+        }
+        Some(processing_response::Response::RequestTrailers(tr)) => {
+            if let Some(hm) = &tr.header_mutation {
+                return extract_header_from_mutation_async(hm, target_key_lower);
+            }
+        }
+        Some(processing_response::Response::ResponseTrailers(tr)) => {
+            if let Some(hm) = &tr.header_mutation {
+                return extract_header_from_mutation_async(hm, target_key_lower);
+            }
+        }
+        Some(processing_response::Response::ImmediateResponse(ir)) => {
+            if let Some(hm) = &ir.headers {
+                return extract_header_from_mutation_async(hm, target_key_lower);
+            }
+        }
+        None => {}
+    }
+
+    None
+}
+
+fn extract_header_from_mutation_async(
+    mutation: &envoy::service::ext_proc::v3::HeaderMutation,
+    target_key_lower: &str,
+) -> Option<String> {
+    for hvo in &mutation.set_headers {
+        if let Some(hdr) = &hvo.header {
+            if hdr.key.eq_ignore_ascii_case(target_key_lower) {
+                if !hdr.value.is_empty() {
+                    return Some(hdr.value.clone());
+                }
+                if !hdr.raw_value.is_empty() {
+                    return Some(String::from_utf8_lossy(&hdr.raw_value).to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
 /// EPP: Request headers and body exchange for upstream endpoint selection.
 ///
 /// Returns Ok(Some(value)) if the ext-proc service replies with a header mutation
@@ -336,7 +459,9 @@ pub fn epp_headers_blocking(
 
                 // Read the CA certificate file
                 let ca_cert = std::fs::read_to_string(ca_path).map_err(|e| {
-                    format!("Failed to read CA certificate file '{}': {}", ca_path, e)
+                    let error_msg = format!("Failed to read CA certificate file '{}': {}", ca_path, e);
+                    ngx_log_error_http!(request, "ngx-inference: {}", error_msg);
+                    error_msg
                 })?;
 
                 // Add the CA certificate to the TLS config
@@ -352,7 +477,7 @@ pub fn epp_headers_blocking(
             ngx_log_debug_http!(request, "ngx-inference: Attempting gRPC connection...");
 
             let tls_result = channel_builder.tls_config(tls_config).map_err(|e| {
-                ngx_log_debug_http!(request, "ngx-inference: TLS config failed: {}", e);
+                ngx_log_error_http!(request, "ngx-inference: TLS configuration failed for {}: {}", endpoint, e);
                 format!("tls config error: {e}")
             })?;
 
@@ -360,26 +485,32 @@ pub fn epp_headers_blocking(
 
             match &connect_result {
                 Ok(_) => {
-                    ngx_log_debug_http!(request, "ngx-inference: TLS connection established");
+                    ngx_log_debug_http!(request, "ngx-inference: TLS connection established to {}", endpoint);
                 }
                 Err(e) => {
-                    ngx_log_debug_http!(request, "ngx-inference: TLS connection failed: {}", e);
+                    let error_str = format!("{}", e);
+
+                    // Classify and log TLS errors with appropriate severity
+                    if error_str.contains("certificate") || error_str.contains("untrusted") {
+                        if error_str.contains("untrusted") || error_str.contains("invalid") {
+                            ngx_log_error_http!(request, "ngx-inference: TLS certificate validation failed for {}: untrusted or invalid certificate - {}", endpoint, error_str);
+                        } else {
+                            ngx_log_warn_http!(request, "ngx-inference: TLS certificate issue for {}: {}", endpoint, error_str);
+                        }
+                    } else if error_str.contains("hostname") {
+                        ngx_log_error_http!(request, "ngx-inference: TLS hostname verification failed for {}: ensure certificate matches endpoint - {}", endpoint, error_str);
+                    } else if error_str.contains("trust") {
+                        ngx_log_error_http!(request, "ngx-inference: TLS trust/CA verification failed for {}: check CA certificate configuration - {}", endpoint, error_str);
+                    } else if error_str.contains("timeout") || error_str.contains("connect") {
+                        ngx_log_warn_http!(request, "ngx-inference: TLS connection failed to {}: network connectivity issue - {}", endpoint, error_str);
+                    } else {
+                        ngx_log_error_http!(request, "ngx-inference: TLS connection failed to {}: {}", endpoint, error_str);
+                    }
+
                     ngx_log_debug_http!(request, "ngx-inference:   - Error type: {:?}", e);
                     ngx_log_debug_http!(request, "ngx-inference:   - Endpoint: {}", endpoint);
                     ngx_log_debug_http!(request, "ngx-inference:   - Domain: {}", domain);
 
-                    // Additional diagnostic information
-                    ngx_log_debug_http!(request, "ngx-inference: Connection failure diagnostics:");
-                    let error_str = format!("{}", e);
-                    if error_str.contains("certificate") {
-                        ngx_log_debug_http!(request, "ngx-inference:   - Certificate-related error detected");
-                    }
-                    if error_str.contains("hostname") {
-                        ngx_log_debug_http!(request, "ngx-inference:   - Hostname verification error detected");
-                    }
-                    if error_str.contains("trust") {
-                        ngx_log_debug_http!(request, "ngx-inference:   - Trust/CA error detected");
-                    }
                 }
             }
 
@@ -399,7 +530,7 @@ pub fn epp_headers_blocking(
 
         let mut client = ExternalProcessorClient::new(channel);
 
-        ngx_log_debug_http!(request, "ngx-inference: gRPC client created successfully");
+        ngx_log_debug_http!(request, "ngx-inference: gRPC client created successfully for {}", endpoint);
         ngx_log_debug_http!(
             request,
             "ngx-inference: Preparing EPP request with {} headers",
@@ -509,17 +640,17 @@ pub fn epp_headers_blocking(
                 ngx_log_debug_http!(request, "ngx-inference: Received EPP response: {:?}", resp);
 
                 if let Some(val) = parse_response_for_header(request, &resp, &target_key_lower) {
-                    ngx_log_debug_http!(request, "ngx-inference: Found header '{}' with value: {}", header_name, val);
+                    ngx_log_debug_http!(request, "ngx-inference: EPP found header '{}' with value: {}", header_name, val);
                     return Ok(Some(val));
                 } else {
                     ngx_log_debug_http!(request, "ngx-inference: Header '{}' not found in response", header_name);
                 }
             }
             Ok(None) => {
-                ngx_log_debug_http!(request, "ngx-inference: EPP response stream closed");
+                ngx_log_debug_http!(request, "ngx-inference: EPP response stream closed, no header provided");
             }
             Err(e) => {
-                ngx_log_debug_http!(request, "ngx-inference: EPP stream receive error: {}", e);
+                ngx_log_info_http!(request, "ngx-inference: EPP stream receive error: {}", e);
                 return Err(format!("stream recv error: {e}"));
             }
         }
@@ -531,9 +662,9 @@ pub fn epp_headers_blocking(
                     ngx_log_debug_http!(request, "ngx-inference: Received additional EPP response: {:?}", resp);
 
                     if let Some(val) = parse_response_for_header(request, &resp, &target_key_lower) {
-                        ngx_log_debug_http!(
+                        ngx_log_info_http!(
                             request,
-                            "ngx-inference: Found header '{}' with value in additional response: {}",
+                            "ngx-inference: EPP found header '{}' with value in additional response: {}",
                             header_name, val
                         );
                         return Ok(Some(val));
@@ -550,7 +681,7 @@ pub fn epp_headers_blocking(
                     break;
                 }
                 Err(e) => {
-                    ngx_log_debug_http!(request, "ngx-inference: EPP stream receive error in continuation: {}", e);
+                    ngx_log_info_http!(request, "ngx-inference: EPP stream receive error in continuation: {}", e);
                     return Err(format!("stream recv error: {e}"));
                 }
             }
@@ -563,4 +694,396 @@ pub fn epp_headers_blocking(
         );
         Ok(None)
     })
+}
+
+/// EPP: Async headers exchange - DEPRECATED AND UNSAFE
+///
+/// ⚠️  WARNING: This function is UNUSED and should NOT be called.
+/// ⚠️  It causes NGINX worker crashes due to threading model violations.
+///
+/// PROBLEM: This function spawns background threads that call NGINX functions
+/// (ngx_http_core_run_phases), which violates NGINX's single-threaded event loop
+/// model and results in segmentation faults (SIGSEGV signal 11).
+///
+/// ✅ USE INSTEAD: epp_headers_blocking() - safe blocking implementation
+///
+/// This function remains in the codebase only for reference. It demonstrates
+/// why naive async approaches don't work with NGINX modules.
+#[allow(clippy::too_many_arguments)]
+pub fn epp_headers_async<F>(
+    request_ptr: *mut ngx::ffi::ngx_http_request_t,
+    endpoint: String,
+    timeout_ms: u64,
+    header_name: String,
+    headers: Vec<(String, String)>,
+    use_tls: bool,
+    ca_file: Option<String>,
+    completion_callback: F,
+) where
+    F: FnOnce(*mut ngx::ffi::ngx_http_request_t, Result<Option<String>, String>) + Send + 'static,
+{
+    let target_key_lower = header_name.to_ascii_lowercase();
+    let uri = normalize_endpoint(&endpoint, use_tls);
+
+    // Convert to usize to make it Send-safe across threads
+    let request_ptr_addr = request_ptr as usize;
+
+    // Log the start of async operation (we can't safely log from async context)
+    // Note: This logging happens before we enter the async context
+
+    // Spawn the async operation without blocking
+    let rt = get_runtime();
+    rt.spawn(async move {
+        let result = async move {
+            let channel_builder =
+                Channel::from_shared(uri.clone()).map_err(|e| format!("channel error: {e}"))?;
+
+            // Build the channel with appropriate TLS configuration
+            let channel = if use_tls {
+                // SECURE MODE: Configure TLS with custom CA if provided, otherwise use system roots
+                use tonic::transport::ClientTlsConfig;
+
+                // Extract domain from endpoint for TLS verification
+                let domain = if let Some(colon_pos) = endpoint.rfind(':') {
+                    endpoint[..colon_pos].to_string()
+                } else {
+                    endpoint.to_string()
+                };
+
+                // Logging not available in async context - would need to pass request context safely
+                let mut tls_config = ClientTlsConfig::new().domain_name(&domain);
+
+                // Use custom CA certificate if provided, otherwise use system roots
+                if let Some(ca_path) = ca_file {
+                    // Read the CA certificate file
+                    let ca_cert = std::fs::read_to_string(ca_path)
+                        .map_err(|e| format!("Failed to read CA certificate file: {}", e))?;
+
+                    // Add the CA certificate to the TLS config
+                    tls_config = tls_config
+                        .ca_certificate(tonic::transport::Certificate::from_pem(&ca_cert));
+                } else {
+                    tls_config = tls_config.with_enabled_roots();
+                }
+
+                let tls_result = channel_builder
+                    .tls_config(tls_config)
+                    .map_err(|e| format!("tls config error: {e}"))?;
+
+                tls_result.connect().await.map_err(|e| {
+                    format!(
+                        "connect error (endpoint: {}, domain: {}): {e}",
+                        endpoint, domain
+                    )
+                })?
+            } else {
+                // No TLS
+                channel_builder
+                    .connect()
+                    .await
+                    .map_err(|e| format!("connect error: {e}"))?
+            };
+
+            let mut client = ExternalProcessorClient::new(channel);
+
+            // EPP: For headers-only exchange, we still need to indicate body mode
+            // but we mark end_of_stream=true on headers to indicate no body follows
+            let proto_cfg = ProtocolConfiguration {
+                request_body_mode: BodySendMode::None as i32,
+                response_body_mode: BodySendMode::None as i32,
+                send_body_without_waiting_for_header_response: false,
+            };
+
+            // Build HeaderMap from provided request headers.
+            let mut header_entries: Vec<envoy::config::core::v3::HeaderValue> = Vec::new();
+            for (k, v) in headers {
+                header_entries.push(envoy::config::core::v3::HeaderValue {
+                    key: k,
+                    value: v,
+                    raw_value: Vec::new(),
+                });
+            }
+            let header_map = HeaderMap {
+                headers: header_entries,
+            };
+
+            // Build metadata_context for EPP routing metadata
+            let metadata_context = {
+                use prost_types::Struct;
+                use std::collections::BTreeMap;
+                let mut filter_metadata = std::collections::HashMap::new();
+
+                // Add empty metadata structure for EPP to populate
+                let metadata_struct = Struct {
+                    fields: BTreeMap::new(),
+                };
+                filter_metadata.insert("envoy.lb".to_string(), metadata_struct);
+
+                Some(envoy::config::core::v3::Metadata {
+                    filter_metadata,
+                    typed_filter_metadata: std::collections::HashMap::new(),
+                })
+            };
+
+            let req_headers = HttpHeaders {
+                headers: Some(header_map),
+                attributes: std::collections::HashMap::new(),
+                end_of_stream: true, // No body follows for headers-only exchange
+            };
+
+            use envoy::service::ext_proc::v3::processing_request;
+            let headers_msg = ProcessingRequest {
+                request: Some(processing_request::Request::RequestHeaders(req_headers)),
+                metadata_context,
+                attributes: std::collections::HashMap::new(),
+                observability_mode: false,
+                protocol_config: Some(proto_cfg),
+            };
+
+            let outbound = tokio_stream::iter(vec![headers_msg]);
+
+            let process_result = client.process(outbound).await;
+            let mut inbound = process_result
+                .map_err(|e| format!("rpc error: {e}"))?
+                .into_inner();
+
+            let next = if timeout_ms == 0 {
+                inbound.message().await
+            } else {
+                match tokio::time::timeout(
+                    std::time::Duration::from_millis(timeout_ms),
+                    inbound.message(),
+                )
+                .await
+                {
+                    Ok(res) => res,
+                    Err(_) => return Ok(None),
+                }
+            };
+
+            match next {
+                Ok(Some(resp)) => {
+                    // We can't safely log from async context without request reference
+                    // The callback will handle logging instead
+                    if let Some(val) = parse_response_for_header_async(&resp, &target_key_lower) {
+                        return Ok(Some(val));
+                    }
+                }
+                Ok(None) => {
+                    // Stream closed
+                }
+                Err(e) => {
+                    return Err(format!("stream recv error: {e}"));
+                }
+            }
+
+            // Continue reading additional responses until stream ends or we find the header.
+            loop {
+                match inbound.message().await {
+                    Ok(Some(resp)) => {
+                        if let Some(val) = parse_response_for_header_async(&resp, &target_key_lower)
+                        {
+                            return Ok(Some(val));
+                        }
+                    }
+                    Ok(None) => {
+                        break;
+                    }
+                    Err(e) => {
+                        return Err(format!("stream recv error: {e}"));
+                    }
+                }
+            }
+
+            Ok(None)
+        }
+        .await;
+
+        // Log completion status before calling callback
+        // We'll log the final result in the callback where we have request context
+
+        // Call the completion callback with the result
+        completion_callback(
+            request_ptr_addr as *mut ngx::ffi::ngx_http_request_t,
+            result,
+        );
+    });
+}
+
+/// Make the runtime accessible to other modules
+pub fn get_tokio_runtime() -> &'static tokio::runtime::Runtime {
+    get_runtime()
+}
+
+/// Internal async EPP function for testing and potential future use.
+/// This is thread-safe but currently unused in production.
+/// The main implementation uses epp_headers_blocking() instead.
+pub async fn epp_headers_blocking_internal(
+    endpoint: &str,
+    timeout_ms: u64,
+    header_name: &str,
+    headers: Vec<(String, String)>,
+    use_tls: bool,
+    ca_file: Option<&str>,
+) -> Result<Option<String>, String> {
+    let target_key_lower = header_name.to_ascii_lowercase();
+    let uri = normalize_endpoint(endpoint, use_tls);
+
+    let channel_builder =
+        Channel::from_shared(uri.clone()).map_err(|e| format!("channel error: {e}"))?;
+
+    // Build the channel with appropriate TLS configuration
+    let channel = if use_tls {
+        // SECURE MODE: Configure TLS with custom CA if provided, otherwise use system roots
+        use tonic::transport::ClientTlsConfig;
+
+        // Extract domain from endpoint for TLS verification
+        let domain = if let Some(colon_pos) = endpoint.rfind(':') {
+            endpoint[..colon_pos].to_string()
+        } else {
+            endpoint.to_string()
+        };
+
+        let mut tls_config = ClientTlsConfig::new().domain_name(&domain);
+
+        // Use custom CA certificate if provided, otherwise use system roots
+        if let Some(ca_path) = ca_file {
+            // Read the CA certificate file
+            let ca_cert = std::fs::read_to_string(ca_path)
+                .map_err(|e| format!("Failed to read CA certificate file '{}': {}", ca_path, e))?;
+
+            // Add the CA certificate to the TLS config
+            tls_config =
+                tls_config.ca_certificate(tonic::transport::Certificate::from_pem(&ca_cert));
+        } else {
+            tls_config = tls_config.with_enabled_roots();
+        }
+
+        let tls_result = channel_builder
+            .tls_config(tls_config)
+            .map_err(|e| format!("tls config error: {e}"))?;
+
+        tls_result.connect().await.map_err(|e| {
+            format!(
+                "connect error (endpoint: {}, domain: {}): {e}",
+                endpoint, domain
+            )
+        })?
+    } else {
+        // No TLS
+        channel_builder
+            .connect()
+            .await
+            .map_err(|e| format!("connect error: {e}"))?
+    };
+
+    let mut client = ExternalProcessorClient::new(channel);
+
+    // EPP: For headers-only exchange, we still need to indicate body mode
+    // but we mark end_of_stream=true on headers to indicate no body follows
+    let proto_cfg = ProtocolConfiguration {
+        request_body_mode: BodySendMode::None as i32,
+        response_body_mode: BodySendMode::None as i32,
+        send_body_without_waiting_for_header_response: false,
+    };
+
+    // Build HeaderMap from provided request headers.
+    let mut header_entries: Vec<envoy::config::core::v3::HeaderValue> = Vec::new();
+    for (k, v) in headers {
+        header_entries.push(envoy::config::core::v3::HeaderValue {
+            key: k,
+            value: v,
+            raw_value: Vec::new(),
+        });
+    }
+    let header_map = HeaderMap {
+        headers: header_entries,
+    };
+
+    // Build metadata_context for EPP routing metadata
+    let metadata_context = {
+        use prost_types::Struct;
+        use std::collections::BTreeMap;
+        let mut filter_metadata = std::collections::HashMap::new();
+
+        // Add empty metadata structure for EPP to populate
+        let metadata_struct = Struct {
+            fields: BTreeMap::new(),
+        };
+        filter_metadata.insert("envoy.lb".to_string(), metadata_struct);
+
+        Some(envoy::config::core::v3::Metadata {
+            filter_metadata,
+            typed_filter_metadata: std::collections::HashMap::new(),
+        })
+    };
+
+    let req_headers = HttpHeaders {
+        headers: Some(header_map),
+        attributes: std::collections::HashMap::new(),
+        end_of_stream: true, // No body follows for headers-only exchange
+    };
+
+    use envoy::service::ext_proc::v3::processing_request;
+    let headers_msg = ProcessingRequest {
+        request: Some(processing_request::Request::RequestHeaders(req_headers)),
+        metadata_context,
+        attributes: std::collections::HashMap::new(),
+        observability_mode: false,
+        protocol_config: Some(proto_cfg),
+    };
+
+    let outbound = tokio_stream::iter(vec![headers_msg]);
+
+    let process_result = client.process(outbound).await;
+    let mut inbound = process_result
+        .map_err(|e| format!("rpc error: {e}"))?
+        .into_inner();
+
+    let next = if timeout_ms == 0 {
+        inbound.message().await
+    } else {
+        match tokio::time::timeout(
+            std::time::Duration::from_millis(timeout_ms),
+            inbound.message(),
+        )
+        .await
+        {
+            Ok(res) => res,
+            Err(_) => return Ok(None),
+        }
+    };
+
+    match next {
+        Ok(Some(resp)) => {
+            if let Some(val) = parse_response_for_header_async(&resp, &target_key_lower) {
+                return Ok(Some(val));
+            }
+        }
+        Ok(None) => {
+            // Stream closed
+        }
+        Err(e) => {
+            return Err(format!("stream recv error: {e}"));
+        }
+    }
+
+    // Continue reading additional responses until stream ends or we find the header.
+    loop {
+        match inbound.message().await {
+            Ok(Some(resp)) => {
+                if let Some(val) = parse_response_for_header_async(&resp, &target_key_lower) {
+                    return Ok(Some(val));
+                }
+            }
+            Ok(None) => {
+                break;
+            }
+            Err(e) => {
+                return Err(format!("stream recv error: {e}"));
+            }
+        }
+    }
+
+    Ok(None)
 }

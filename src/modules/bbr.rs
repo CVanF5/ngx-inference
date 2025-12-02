@@ -5,6 +5,22 @@ use ngx::http::HttpModuleLocationConf;
 use ngx::{core, http, ngx_log_debug_http};
 use std::ffi::{c_char, c_void};
 
+// Helper macro for info-level logging in BBR
+macro_rules! ngx_log_info_http {
+    ($request:expr, $($arg:tt)*) => {
+        unsafe {
+            let msg = format!($($arg)*);
+            let c_msg = std::ffi::CString::new(msg).unwrap();
+            ngx::ffi::ngx_log_error_core(
+                ngx::ffi::NGX_LOG_INFO as ngx::ffi::ngx_uint_t,
+                ($request.as_mut().connection.as_ref().unwrap().log),
+                0,
+                c_msg.as_ptr(),
+            );
+        }
+    };
+}
+
 // Platform-conditional string pointer casting for nginx FFI
 // macOS nginx FFI expects *const i8, Linux expects *const u8
 #[cfg(target_os = "macos")]
@@ -47,12 +63,6 @@ impl BbrProcessor {
             return core::Status::NGX_DECLINED;
         }
 
-        ngx_log_debug_http!(
-            request,
-            "ngx-inference: BBR processing request, max_body_size: {}",
-            conf.bbr_max_body_size
-        );
-
         let header_name = if conf.bbr_header_name.is_empty() {
             "X-Gateway-Model-Name".to_string()
         } else {
@@ -68,6 +78,13 @@ impl BbrProcessor {
             );
             return core::Status::NGX_DECLINED;
         }
+
+        // Log BBR processing start at debug level to avoid noise from duplicate phase calls
+        ngx_log_debug_http!(
+            request,
+            "ngx-inference: BBR processing request, max_body_size: {}",
+            conf.bbr_max_body_size
+        );
 
         // Start body reading for BBR processing
         Self::start_body_reading(request, conf)
@@ -209,7 +226,13 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
     if let Some(model_name) = extract_model_from_body(&body) {
         // Add the model header to the request
         if request.add_header_in(&header_name, &model_name).is_some() {
-            // Header set successfully - no logging needed for normal operation
+            // Log successful model extraction at INFO level
+            let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
+            ngx_log_info_http!(
+                request,
+                "ngx-inference: BBR extracted model '{}' from request body",
+                model_name
+            );
         } else {
             ngx::ffi::ngx_log_error_core(
                 ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
@@ -226,7 +249,13 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
         // No model found - use configured default to prevent reprocessing
         let default_model = &conf.bbr_default_model;
         let _ = request.add_header_in(&header_name, default_model);
-        // Using default model is normal behavior - no logging needed
+        // Log default model usage at INFO level
+        let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
+        ngx_log_info_http!(
+            request,
+            "ngx-inference: BBR using default model '{}' (no model found in body)",
+            default_model
+        );
     }
 
     // Body processing complete - resume NGINX phase processing

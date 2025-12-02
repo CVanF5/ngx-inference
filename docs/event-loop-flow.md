@@ -61,16 +61,17 @@ sequenceDiagram
     
     Handler->>EPP: process_request(request, conf)
     EPP->>EPP: Check if epp_enable == true
-    EPP->>EPP: pick_upstream(request, conf)
+    EPP->>EPP: pick_upstream_blocking(request, conf)
     EPP->>EPP: get_header_in("X-Inference-Upstream")
     Note over EPP: Header not present (first time)
     EPP->>EPP: Collect request headers
     EPP->>gRPC: epp_headers_blocking(endpoint, headers)
+    Note over gRPC: Blocking call (uses async internally with block_on)
     gRPC->>ExtProc: gRPC Request (headers only)
     ExtProc-->>gRPC: Response with upstream selection
     gRPC-->>EPP: Returns upstream value
     EPP->>EPP: add_header_in("X-Inference-Upstream", upstream)
-    EPP-->>Handler: Returns Ok(())
+    EPP-->>Handler: Returns NGX_OK
     
     Handler-->>NGINX: Returns NGX_DECLINED (continue)
     Note over NGINX: Continue to upstream phase
@@ -100,10 +101,10 @@ sequenceDiagram
 11. **`inference_access_handler`** - Same handler called again
 12. **`BbrProcessor::process_request()`** - Checks header, returns `NGX_DECLINED`
 13. **`EppProcessor::process_request()`** - Check if EPP needed
-14. **`EppProcessor::pick_upstream()`** - Contact external processor
-15. **`crate::grpc::epp_headers_blocking()`** - Blocking gRPC call
+14. **`EppProcessor::pick_upstream_blocking()`** - Contact external processor (blocking)
+15. **`crate::grpc::epp_headers_blocking()`** - Blocking gRPC call (async internally)
 16. **`add_header_in()`** - Set `X-Inference-Upstream` header
-17. Returns **`NGX_DECLINED`** to continue normal processing
+17. Returns **`NGX_OK`** to indicate successful processing
 
 ### Variable Evaluation
 18. **`inference_upstream_var_get()`** - Evaluates `$inference_upstream` variable
@@ -115,7 +116,7 @@ sequenceDiagram
 
 - **BBR is async**: Returns `NGX_DONE` to yield control back to NGINX event loop. The request body is read asynchronously using non-blocking I/O. NGINX can process other requests while waiting for body chunks to arrive.
 
-- **EPP is sync/blocking**: Makes a blocking gRPC call but completes within the same handler invocation. This means EPP will block the worker process for this request until the gRPC call completes (typically ~200ms or configured timeout).
+- **EPP is blocking**: Uses synchronous gRPC calls via `epp_headers_blocking()`. While the gRPC internals use async operations with `tokio::runtime::block_on()`, the NGINX interface remains blocking and respects the single-threaded event loop model. This is simpler and more reliable than async callbacks.
 
 - **Request-specific pause**: Only the specific request waiting for body reading has its phase processing paused. Other requests continue through their phases normally.
 
