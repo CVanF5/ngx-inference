@@ -169,6 +169,8 @@ if [[ -n "$SERVER_CONFIG" ]]; then
     SERVER_CONFIG_CONTENT=$(cat "$SERVER_CONFIG_FILE" | \
         sed "s|http://localhost:8080|http://$UPSTREAM_HOST|g" | \
         sed "s|\"localhost:8080\"|\"$UPSTREAM_HOST\"|g" | \
+        sed "s|\"127.0.0.1:8080\"|\"$UPSTREAM_HOST\"|g" | \
+        sed "s|127.0.0.1:8080|$UPSTREAM_HOST|g" | \
         sed "s|\"localhost:9001\"|\"$EPP_HOST\"|g" | \
         sed "s|\"127.0.0.1:9001\"|\"$EPP_HOST\"|g" | \
         sed "s|\"mock-extproc:9001\"|\"$EPP_HOST\"|g" | \

@@ -675,8 +675,6 @@ name = "ngx-inference"
 version = "0.1.0"
 dependencies = [
  "bytes",
- "hyper",
- "hyper-util",
  "libc",
  "ngx",
  "prost",
@@ -691,8 +689,6 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
- "tower",
- "tracing",
 ]
 
 [[package]]

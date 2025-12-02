@@ -12,42 +12,7 @@ use std::sync::OnceLock;
 
 use tonic::transport::Channel;
 
-// Helper macro for info-level logging in gRPC operations
-#[allow(unused_macros)]
-macro_rules! ngx_log_info_http {
-    ($request:expr, $($arg:tt)*) => {
-        unsafe {
-            let msg = format!($($arg)*);
-            let c_msg = std::ffi::CString::new(msg).unwrap();
-            ngx::ffi::ngx_log_error_core(
-                ngx::ffi::NGX_LOG_INFO as ngx::ffi::ngx_uint_t,
-                ($request.connection().as_ref().unwrap().log),
-                0,
-                c_msg.as_ptr(),
-            );
-        }
-    };
-}
-
-// Helper macro for warning-level logging in gRPC operations
-#[allow(unused_macros)]
-macro_rules! ngx_log_warn_http {
-    ($request:expr, $($arg:tt)*) => {
-        unsafe {
-            let msg = format!($($arg)*);
-            let c_msg = std::ffi::CString::new(msg).unwrap();
-            ngx::ffi::ngx_log_error_core(
-                ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
-                ($request.connection().as_ref().unwrap().log),
-                0,
-                c_msg.as_ptr(),
-            );
-        }
-    };
-}
-
 // Helper macro for error-level logging in gRPC operations
-#[allow(unused_macros)]
 macro_rules! ngx_log_error_http {
     ($request:expr, $($arg:tt)*) => {
         unsafe {
