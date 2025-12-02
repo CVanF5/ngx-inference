@@ -90,7 +90,7 @@ impl BbrProcessor {
         Self::start_body_reading(request, conf)
     }
 
-    fn start_body_reading(request: &mut http::Request, conf: &ModuleConfig) -> core::Status {
+    fn start_body_reading(request: &mut http::Request, _conf: &ModuleConfig) -> core::Status {
         // Start reading the request body without pre-validation
         // We'll validate the actual body size during reading
         ngx_log_debug_http!(request, "ngx-inference: BBR starting body reading");
@@ -113,13 +113,7 @@ impl BbrProcessor {
         match status {
             core::Status::NGX_OK => core::Status::NGX_DONE, // Body reading complete, handler called
             core::Status::NGX_AGAIN => core::Status::NGX_DONE, // Body reading in progress, handler will be called
-            _ => {
-                if conf.bbr_failure_mode_allow {
-                    core::Status::NGX_DECLINED
-                } else {
-                    core::Status::NGX_ERROR
-                }
-            }
+            _ => core::Status::NGX_ERROR,                      // Always fail on error
         }
     }
 }
@@ -180,39 +174,31 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
     let body = match read_request_body(r, conf) {
         Ok(body) => body,
         Err(_) => {
-            if conf.bbr_failure_mode_allow {
-                // Continue with next phase instead of restarting phases
-                return;
+            // Check if we already set a 413 status in read_request_body
+            if (*r).headers_out.status
+                == ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t
+            {
+                // 413 error - send special response and finalize
+                ngx::ffi::ngx_http_special_response_handler(
+                    r,
+                    ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_int_t,
+                );
+                ngx::ffi::ngx_http_finalize_request(
+                    r,
+                    ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_int_t,
+                );
             } else {
-                // Check if we already set a 413 status in read_request_body
-                if (*r).headers_out.status
-                    == ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t
-                {
-                    // 413 error - send special response and finalize so access logging runs
-                    ngx::ffi::ngx_http_special_response_handler(
-                        r,
-                        ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_int_t,
-                    );
-                    ngx::ffi::ngx_http_finalize_request(
-                        r,
-                        ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_int_t,
-                    );
-                    return;
-                } else {
-                    // Other error - set 500, send special response and finalize so access logging runs
-                    (*r).headers_out.status =
-                        ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_uint_t;
-                    ngx::ffi::ngx_http_special_response_handler(
-                        r,
-                        ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_int_t,
-                    );
-                    ngx::ffi::ngx_http_finalize_request(
-                        r,
-                        ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_int_t,
-                    );
-                    return;
-                }
+                // Other error - send 500 error
+                ngx::ffi::ngx_http_special_response_handler(
+                    r,
+                    ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_int_t,
+                );
+                ngx::ffi::ngx_http_finalize_request(
+                    r,
+                    ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx::ffi::ngx_int_t,
+                );
             }
+            return;
         }
     };
 
@@ -249,6 +235,7 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
         // No model found - use configured default to prevent reprocessing
         let default_model = &conf.bbr_default_model;
         let _ = request.add_header_in(&header_name, default_model);
+
         // Log default model usage at INFO level
         let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
         ngx_log_info_http!(
@@ -317,28 +304,18 @@ unsafe fn read_request_body(
                         conf.bbr_max_body_size
                     );
 
-                    if !conf.bbr_failure_mode_allow {
-                        ngx::ffi::ngx_log_error_core(
-                            ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
-                            (*(*r).connection).log,
-                            0,
-                            #[allow(clippy::manual_c_str_literals)] // FFI code
-                            cstr_ptr(b"ngx-inference: BBR rejected request with HTTP 413 - actual payload size %uz exceeds limit %uz bytes\0".as_ptr()),
-                            total_read + len,
-                            conf.bbr_max_body_size
-                        );
-                        (*r).headers_out.status =
-                            ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
-                        return Err(());
-                    } else {
-                        // In allow mode, truncate to limit
-                        let remaining = conf.bbr_max_body_size - total_read;
-                        if remaining > 0 {
-                            let slice = std::slice::from_raw_parts(pos as *const u8, remaining);
-                            body.extend_from_slice(slice);
-                        }
-                        break;
-                    }
+                    ngx::ffi::ngx_log_error_core(
+                        ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
+                        (*(*r).connection).log,
+                        0,
+                        #[allow(clippy::manual_c_str_literals)] // FFI code
+                        cstr_ptr(b"ngx-inference: BBR rejected request with HTTP 413 - actual payload size %uz exceeds limit %uz bytes\0".as_ptr()),
+                        total_read + len,
+                        conf.bbr_max_body_size
+                    );
+                    (*r).headers_out.status =
+                        ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
+                    return Err(());
                 }
 
                 let slice = std::slice::from_raw_parts(pos as *const u8, len);
@@ -365,41 +342,18 @@ unsafe fn read_request_body(
                         conf.bbr_max_body_size
                     );
 
-                    if !conf.bbr_failure_mode_allow {
-                        ngx::ffi::ngx_log_error_core(
-                            ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
-                            (*(*r).connection).log,
-                            0,
-                            #[allow(clippy::manual_c_str_literals)] // FFI code
-                            cstr_ptr(b"ngx-inference: BBR rejected request with HTTP 413 - actual payload size %uz exceeds limit %uz bytes\0".as_ptr()),
-                            total_read + file_size,
-                            conf.bbr_max_body_size
-                        );
-                        (*r).headers_out.status =
-                            ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
-                        return Err(());
-                    } else {
-                        // In allow mode, read only what fits within the limit
-                        let remaining = conf.bbr_max_body_size - total_read;
-                        if remaining > 0 {
-                            // Read partial file content up to the limit
-                            let fd = (*file).fd;
-                            if fd != -1 {
-                                let mut file_buffer = vec![0u8; remaining];
-                                let result = libc::pread(
-                                    fd,
-                                    file_buffer.as_mut_ptr() as *mut c_void,
-                                    remaining,
-                                    file_pos as libc::off_t,
-                                );
-                                if result > 0 {
-                                    file_buffer.truncate(result as usize);
-                                    body.extend_from_slice(&file_buffer);
-                                }
-                            }
-                        }
-                        break;
-                    }
+                    ngx::ffi::ngx_log_error_core(
+                        ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
+                        (*(*r).connection).log,
+                        0,
+                        #[allow(clippy::manual_c_str_literals)] // FFI code
+                        cstr_ptr(b"ngx-inference: BBR rejected request with HTTP 413 - actual payload size %uz exceeds limit %uz bytes\0".as_ptr()),
+                        total_read + file_size,
+                        conf.bbr_max_body_size
+                    );
+                    (*r).headers_out.status =
+                        ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
+                    return Err(());
                 }
 
                 // Read from file descriptor

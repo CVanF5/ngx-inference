@@ -3,12 +3,14 @@ use ngx::http::MergeConfigError;
 /// Configuration structure for the ngx-inference module
 #[derive(Clone)]
 pub struct ModuleConfig {
+    // Global settings
+    pub default_upstream: Option<String>, // global default upstream for both BBR and EPP failures
+
     // BBR (Body-Based Routing) - implemented directly in module
     pub bbr_enable: bool,
-    pub bbr_failure_mode_allow: bool, // fail-open if JSON parsing fails
-    pub bbr_header_name: String,      // default "X-Gateway-Model-Name"
-    pub bbr_max_body_size: usize,     // default 10MB limit for BBR processing
-    pub bbr_default_model: String,    // default model when none found in body
+    pub bbr_header_name: String,   // default "X-Gateway-Model-Name"
+    pub bbr_max_body_size: usize,  // default 10MB limit for BBR processing
+    pub bbr_default_model: String, // default model when none found in body
 
     // EPP (Endpoint Picker Processor)
     pub epp_enable: bool,
@@ -23,8 +25,9 @@ pub struct ModuleConfig {
 impl Default for ModuleConfig {
     fn default() -> Self {
         Self {
+            default_upstream: None,
+
             bbr_enable: false,
-            bbr_failure_mode_allow: false,
             bbr_header_name: "X-Gateway-Model-Name".to_string(),
             bbr_max_body_size: 10 * 1024 * 1024, // 10MB
             bbr_default_model: "unknown".to_string(),
@@ -51,6 +54,9 @@ impl ngx::http::Merge for ModuleConfig {
         }
 
         // Inherit string options if not set
+        if self.default_upstream.is_none() {
+            self.default_upstream = prev.default_upstream.clone();
+        }
         if self.epp_endpoint.is_none() {
             self.epp_endpoint = prev.epp_endpoint.clone();
         }
@@ -93,9 +99,6 @@ impl ngx::http::Merge for ModuleConfig {
         }
 
         // Inherit bools - only inherit true values if current level hasn't explicitly set false
-        if prev.bbr_failure_mode_allow {
-            self.bbr_failure_mode_allow = true;
-        }
         if prev.epp_failure_mode_allow {
             self.epp_failure_mode_allow = true;
         }

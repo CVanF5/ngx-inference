@@ -121,43 +121,6 @@ extern "C" fn ngx_http_inference_set_bbr_enable(
     core::NGX_CONF_OK
 }
 
-// inference_bbr_failure_mode_allow on|off
-extern "C" fn ngx_http_inference_set_bbr_failure_mode_allow(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
-
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(
-                    NGX_LOG_EMERG,
-                    cf,
-                    "`inference_bbr_failure_mode_allow` not utf-8"
-                );
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        match set_on_off(val) {
-            Some(b) => conf.bbr_failure_mode_allow = b,
-            None => {
-                ngx_conf_log_error!(
-                    NGX_LOG_EMERG,
-                    cf,
-                    "`inference_bbr_failure_mode_allow` expects on|off"
-                );
-                return core::NGX_CONF_ERROR;
-            }
-        }
-    }
-    core::NGX_CONF_OK
-}
-
 // inference_bbr_max_body_size N (maximum body size in bytes for BBR processing, default 10MB)
 extern "C" fn ngx_http_inference_set_bbr_max_body_size(
     cf: *mut ngx_conf_t,
@@ -229,6 +192,29 @@ extern "C" fn ngx_http_inference_set_bbr_default_model(
             }
         };
         conf.bbr_default_model = val.to_string();
+    }
+    core::NGX_CONF_OK
+}
+
+// inference_default_upstream UPSTREAM
+extern "C" fn ngx_http_inference_set_default_upstream(
+    cf: *mut ngx_conf_t,
+    _cmd: *mut ngx_command_t,
+    conf: *mut c_void,
+) -> *mut c_char {
+    unsafe {
+        let conf = &mut *(conf as *mut ModuleConfig);
+        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+
+        let val = match args[1].to_str() {
+            Ok(s) => s,
+            Err(_) => {
+                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_default_upstream` not utf-8");
+                return core::NGX_CONF_ERROR;
+            }
+        };
+
+        set_string_opt(&mut conf.default_upstream, val);
     }
     core::NGX_CONF_OK
 }
@@ -434,6 +420,15 @@ extern "C" fn ngx_http_inference_set_epp_ca_file(
 // NGINX directives table
 static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 13] = [
     ngx_command_t {
+        name: ngx_string!("inference_default_upstream"),
+        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
+            as ngx_uint_t,
+        set: Some(ngx_http_inference_set_default_upstream),
+        conf: NGX_HTTP_LOC_CONF_OFFSET,
+        offset: 0,
+        post: std::ptr::null_mut(),
+    },
+    ngx_command_t {
         name: ngx_string!("inference_bbr"),
         type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
             as ngx_uint_t,
@@ -447,15 +442,6 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 13] = [
         type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
             as ngx_uint_t,
         set: Some(ngx_http_inference_set_bbr_max_body_size),
-        conf: NGX_HTTP_LOC_CONF_OFFSET,
-        offset: 0,
-        post: std::ptr::null_mut(),
-    },
-    ngx_command_t {
-        name: ngx_string!("inference_bbr_failure_mode_allow"),
-        type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
-            as ngx_uint_t,
-        set: Some(ngx_http_inference_set_bbr_failure_mode_allow),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -622,6 +608,33 @@ http_variable_get!(
                 (*v).set_escape(0);
                 (*v).set_not_found(0);
                 (*v).data = data_ptr as *mut u8;
+            } else if let Some(ref default_upstream) = conf.default_upstream {
+                // Use default upstream when header not found
+                let bytes = default_upstream.as_bytes();
+                if bytes.is_empty() {
+                    (*v).set_not_found(1);
+                    (*v).set_len(0);
+                    (*v).data = ::core::ptr::null_mut();
+                    return core::Status::NGX_OK;
+                }
+                // allocate buffer from request pool
+                let pool = request.pool();
+                let data_ptr = pool.alloc(bytes.len());
+                if data_ptr.is_null() {
+                    // mark not found on error
+                    (*v).set_not_found(1);
+                    (*v).set_len(0);
+                    (*v).data = ::core::ptr::null_mut();
+                    return core::Status::NGX_ERROR;
+                }
+                ::core::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr as *mut u8, bytes.len());
+                // set ngx_variable_value_t fields
+                (*v).set_len(bytes.len() as u32);
+                (*v).set_valid(1);
+                (*v).set_no_cacheable(0);
+                (*v).set_escape(0);
+                (*v).set_not_found(0);
+                (*v).data = data_ptr as *mut u8;
             } else {
                 // mark variable as not found
                 (*v).set_not_found(1);
@@ -675,10 +688,8 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
                 // Otherwise continue processing
             }
             core::Status::NGX_ERROR => {
-                // Other error - check failure mode
-                if !conf.bbr_failure_mode_allow {
-                    return http::HTTPStatus::BAD_GATEWAY.into();
-                }
+                // Other BBR error - always return 502 Bad Gateway
+                return http::HTTPStatus::BAD_GATEWAY.into();
             }
             _ => {
                 // Continue processing

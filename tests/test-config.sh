@@ -412,31 +412,17 @@ test_bbr_large_body() {
     local http_code2=$(echo "$response2" | grep -o 'HTTPSTATUS:[0-9]*' | cut -d: -f2)
     local body2=$(echo "$response2" | sed 's/HTTPSTATUS:[0-9]*$//')
 
-    # Behavior depends on failure_mode_allow setting
-    if [[ "$config_name" == *"epp_on"* ]]; then
-        # BBR+EPP config uses failure_mode_allow on - should accept and may use default model
-        if [[ "$http_code2" == "200" ]]; then
-            local model_header2=$(echo "$body2" | jq -r '.request.headers."x-gateway-model-name" // empty' 2>/dev/null)
-            if [[ -n "$model_header2" && "$model_header2" != "empty" && "$model_header2" != "null" ]]; then
-                echo -e "${GREEN}      ✓ 16MB payload accepted with default model: $model_header2 (failure_mode_allow=on)${NC}"
-                ((tests_passed++))
-            else
-                echo -e "${GREEN}      ✓ 16MB payload accepted but no model extracted (failure_mode_allow=on)${NC}"
-                ((tests_passed++))
-            fi
-        else
-            echo -e "${YELLOW}      ⚠ 16MB payload rejected (HTTP $http_code2) despite failure_mode_allow=on${NC}"
-        fi
+    # All BBR configurations now consistently reject oversized payloads
+    if [[ "$http_code2" == "413" ]]; then
+        echo -e "${GREEN}      ✓ 16MB payload correctly rejected (HTTP 413)${NC}"
+        ((tests_passed++))
+    elif [[ "$http_code2" == "502" ]]; then
+        echo -e "${GREEN}      ✓ 16MB payload correctly rejected (HTTP 502)${NC}"
+        ((tests_passed++))
+    elif [[ "$http_code2" == "200" ]]; then
+        echo -e "${RED}      ✗ 16MB payload unexpectedly accepted${NC}"
     else
-        # BBR-only config uses failure_mode_allow off - should reject
-        if [[ "$http_code2" == "413" || "$http_code2" == "502" ]]; then
-            echo -e "${GREEN}      ✓ 16MB payload correctly rejected (HTTP $http_code2)${NC}"
-            ((tests_passed++))
-        elif [[ "$http_code2" == "200" ]]; then
-            echo -e "${RED}      ✗ 16MB payload unexpectedly accepted${NC}"
-        else
-            echo -e "${YELLOW}      ⚠ 16MB payload: unexpected HTTP $http_code2${NC}"
-        fi
+        echo -e "${YELLOW}      ⚠ 16MB payload: unexpected HTTP $http_code2${NC}"
     fi
 
     if [[ $tests_passed -eq $tests_total ]]; then
