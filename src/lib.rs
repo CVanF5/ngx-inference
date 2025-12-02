@@ -688,8 +688,8 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
                 // Otherwise continue processing
             }
             core::Status::NGX_ERROR => {
-                // Other BBR error - always return 502 Bad Gateway
-                return http::HTTPStatus::BAD_GATEWAY.into();
+                // Other BBR error - return 500 Internal Server Error
+                return http::HTTPStatus::INTERNAL_SERVER_ERROR.into();
             }
             _ => {
                 // Continue processing
@@ -710,7 +710,7 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
                 unsafe {
                     let msg = b"ngx-inference: EPP module processing failed internally\0";
                     ngx::ffi::ngx_log_error_core(
-                        ngx::ffi::NGX_LOG_INFO as ngx::ffi::ngx_uint_t,
+                        ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
                         request.as_mut().connection.as_ref().unwrap().log,
                         0,
                         cstr_ptr(msg.as_ptr()),
@@ -725,10 +725,10 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
                             (*(*r_ptr).connection).log,
                             0,
                             #[allow(clippy::manual_c_str_literals)] // FFI code
-                            cstr_ptr(b"ngx-inference: Module returning HTTP 502 due to EPP processing failure (fail-closed mode)\0".as_ptr()),
+                            cstr_ptr(b"ngx-inference: Module returning HTTP 500 due to EPP processing failure (fail-closed mode)\0".as_ptr()),
                         );
                     }
-                    return http::HTTPStatus::BAD_GATEWAY.into();
+                    return http::HTTPStatus::INTERNAL_SERVER_ERROR.into();
                 }
             }
             _ => {

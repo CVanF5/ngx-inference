@@ -157,9 +157,10 @@ For local development and testing without Docker:
 Troubleshooting
 ---------------
 - If EPP endpoints are unreachable or not listening on gRPC, you may see `BAD_GATEWAY` when failure mode allow is off. Toggle `*_failure_mode_allow on` to fail-open during testing.
+- **Enhanced TLS Error Logging**: The module now provides detailed TLS certificate validation error messages (e.g., "invalid peer certificate: UnknownIssuer") instead of generic transport errors. Check error logs for specific TLS issues like unknown issuers or certificate validation failures.
 - Ensure your EPP implementation is configured to return a header mutation for the upstream endpoint. The module will parse response frames and search for `header_mutation` entries.
 - BBR processes JSON directly in the module - ensure request bodies contain valid JSON with a "model" field.
-- Use `error_log` and debug logging to verify module activation. BBR logs body reading and size limit enforcement; EPP logs gRPC errors. Set `error_log` to `debug` to observe processing details.
+- Use `error_log` and debug logging to verify module activation. BBR logs body reading and size limit enforcement; EPP logs gRPC errors with detailed TLS diagnostics. Set `error_log` to `debug` to observe processing details.
 
 Roadmap
 -------
@@ -168,6 +169,8 @@ Roadmap
 - Validate large body handling and back-pressure for BBR; refine chunked reads/writes and resource usage for very large payloads.
 - Connection pooling and caching for improved performance at scale.
 - Enhanced TLS configuration options (client certificates, cipher suites, etc.).
+- ✅ **Completed**: Enhanced TLS error logging with detailed certificate validation messages
+- ✅ **Completed**: Streamlined test infrastructure with consistent vLLM backend usage
 
 License
 -------

@@ -213,12 +213,7 @@ impl EppProcessor {
                     }
                 }
             }
-            Err(err) => {
-                ngx_log_info_http!(
-                    request,
-                    "ngx-inference: EPP external service error: {}",
-                    err
-                );
+            Err(_err) => {
                 return Err("epp grpc error");
             }
         }

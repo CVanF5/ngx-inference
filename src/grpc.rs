@@ -28,6 +28,26 @@ macro_rules! ngx_log_error_http {
     };
 }
 
+/// Extract detailed error information from transport errors
+fn extract_error_details(error: &tonic::transport::Error) -> String {
+    // Try to get the root cause error
+    let mut current_error: &dyn std::error::Error = error;
+    let mut error_chain = Vec::new();
+
+    // Walk the error chain to find the root cause
+    while let Some(source) = current_error.source() {
+        error_chain.push(source.to_string());
+        current_error = source;
+    }
+
+    // If we found a chain, use the most specific error
+    if !error_chain.is_empty() {
+        error_chain.last().unwrap().clone()
+    } else {
+        error.to_string()
+    }
+}
+
 static RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 fn get_runtime() -> &'static tokio::runtime::Runtime {
@@ -441,17 +461,18 @@ pub fn epp_headers_blocking(
                 let connect_result = tls_result.connect().await;
 
                 connect_result.map_err(|e| {
+                    let detailed_error = extract_error_details(&e);
                     format!(
-                        "connect error (endpoint: {}, domain: {}): {e}",
-                        endpoint_copy, domain
+                        "TLS connection failed (endpoint: {}, domain: {}): {}",
+                        endpoint_copy, domain, detailed_error
                     )
                 })?
             } else {
                 // PLAINTEXT MODE: No TLS configuration
-                channel_builder
-                    .connect()
-                    .await
-                    .map_err(|e| format!("connect error: {e}"))?
+                channel_builder.connect().await.map_err(|e| {
+                    let detailed_error = extract_error_details(&e);
+                    format!("HTTP connection failed: {}", detailed_error)
+                })?
             };
 
             let mut client = ExternalProcessorClient::new(channel);
@@ -681,17 +702,18 @@ pub fn epp_headers_async<F>(
                     .map_err(|e| format!("tls config error: {e}"))?;
 
                 tls_result.connect().await.map_err(|e| {
+                    let detailed_error = extract_error_details(&e);
                     format!(
-                        "connect error (endpoint: {}, domain: {}): {e}",
-                        endpoint, domain
+                        "TLS connection failed (endpoint: {}, domain: {}): {}",
+                        endpoint, domain, detailed_error
                     )
                 })?
             } else {
                 // No TLS
-                channel_builder
-                    .connect()
-                    .await
-                    .map_err(|e| format!("connect error: {e}"))?
+                channel_builder.connect().await.map_err(|e| {
+                    let detailed_error = extract_error_details(&e);
+                    format!("HTTP connection failed: {}", detailed_error)
+                })?
             };
 
             let mut client = ExternalProcessorClient::new(channel);
@@ -874,17 +896,18 @@ pub async fn epp_headers_blocking_internal(
             .map_err(|e| format!("tls config error: {e}"))?;
 
         tls_result.connect().await.map_err(|e| {
+            let detailed_error = extract_error_details(&e);
             format!(
-                "connect error (endpoint: {}, domain: {}): {e}",
-                endpoint, domain
+                "TLS connection failed (endpoint: {}, domain: {}): {}",
+                endpoint, domain, detailed_error
             )
         })?
     } else {
         // No TLS
-        channel_builder
-            .connect()
-            .await
-            .map_err(|e| format!("connect error: {e}"))?
+        channel_builder.connect().await.map_err(|e| {
+            let detailed_error = extract_error_details(&e);
+            format!("HTTP connection failed: {}", detailed_error)
+        })?
     };
 
     let mut client = ExternalProcessorClient::new(channel);

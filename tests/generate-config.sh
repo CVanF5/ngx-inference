@@ -165,7 +165,7 @@ if [[ -n "$SERVER_CONFIG" ]]; then
         RESOLVER=$(grep '^nameserver' /etc/resolv.conf | grep -v '^nameserver fe80::' | awk '{print $2}' | head -1 || echo "8.8.8.8")
     fi
 
-    # Read server config and replace localhost references with environment-specific hosts
+    # Read server config and replace references with environment-specific hosts
     SERVER_CONFIG_CONTENT=$(cat "$SERVER_CONFIG_FILE" | \
         sed "s|http://localhost:8080|http://$UPSTREAM_HOST|g" | \
         sed "s|\"localhost:8080\"|\"$UPSTREAM_HOST\"|g" | \
@@ -177,7 +177,9 @@ if [[ -n "$SERVER_CONFIG" ]]; then
         sed "s|\"vllm-llama3-8b-instruct-epp:9002\"|\"$EPP_HOST\"|g" | \
         sed "s|localhost:9001|$EPP_HOST|g" | \
         sed "s|127.0.0.1:9001|$EPP_HOST|g" | \
-        sed "s|mock-extproc:9001|$EPP_HOST|g")
+        sed "s|mock-extproc:9001|$EPP_HOST|g" | \
+        sed "s|\"vllm-llama3-8b-instruct.ngx-inference-test.svc.cluster.local:8000\"|\"$UPSTREAM_HOST\"|g" | \
+        sed "s|vllm-llama3-8b-instruct.ngx-inference-test.svc.cluster.local:8000|$UPSTREAM_HOST|g")
 
     # For local and docker environments, disable TLS and remove CA file directive
     # Only kind environment uses TLS with proper certificates

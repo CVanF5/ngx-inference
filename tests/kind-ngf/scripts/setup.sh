@@ -48,12 +48,8 @@ build_and_load_image() {
     cd "$PROJECT_ROOT"
     docker build -f docker/nginx/Dockerfile -t ngx-inference:latest .
 
-    echo -e "${YELLOW}Building echo-server image...${NC}"
-    docker build -f docker/echo-server/Dockerfile -t echo-server:latest docker/echo-server/
-
     echo -e "${YELLOW}Loading images into kind cluster...${NC}"
     kind load docker-image ngx-inference:latest --name "$CLUSTER_NAME"
-    kind load docker-image echo-server:latest --name "$CLUSTER_NAME"
 
     echo -e "${GREEN}✓ Images built and loaded${NC}"
     echo ""
@@ -219,18 +215,8 @@ deploy_vllm_and_epp() {
     echo ""
 }
 
-# Deploy echo-server and NGINX
+# Deploy NGINX
 deploy_nginx() {
-    echo -e "${YELLOW}Deploying echo-server...${NC}"
-    kubectl apply -f "$TEST_DIR/manifests/05-echo-server.yaml"
-
-    # Wait for echo-server
-    if kubectl wait --for=condition=ready pod -l app=echo-server -n "$NAMESPACE" --timeout=60s 2>/dev/null; then
-        echo -e "${GREEN}✓ Echo-server ready${NC}"
-    else
-        echo -e "${YELLOW}Note: Echo-server may still be starting${NC}"
-    fi
-
     echo -e "${YELLOW}Deploying NGINX with ngx-inference module...${NC}"
 
     kubectl apply -f "$TEST_DIR/manifests/04-nginx-inference.yaml"

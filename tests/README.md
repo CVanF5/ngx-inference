@@ -9,10 +9,11 @@ This directory contains test scripts and utilities for validating the ngx-infere
 Main test runner that validates BBR (Body-Based Routing) and EPP (External Processing Pipeline) module configurations. This script supports three testing environments:
 
 **Configuration Test Matrix:**
-- **BBR ON + EPP OFF**: Tests model extraction only
-- **BBR OFF + EPP ON**: Tests upstream selection only  
-- **BBR ON + EPP ON**: Tests both modules active
-- **BBR OFF + EPP OFF**: Tests no processing (baseline)
+- **BBR ON + EPP OFF**: Tests model extraction with vLLM backend
+- **BBR OFF + EPP ON**: Tests upstream selection with EPP routing to vLLM
+- **BBR ON + EPP ON**: Tests both modules active with vLLM responses
+- **BBR OFF + EPP OFF**: Tests direct vLLM routing (no processing)
+- **EPP Untrusted TLS**: Tests TLS certificate validation with enhanced error logging
 
 **Execution Modes:**
 - **Local Mode**: Uses locally compiled nginx module with local backend services
@@ -39,7 +40,7 @@ DOCKER_ENVIRONMENT=main ./tests/test-config.sh  # Docker mode
 Main Docker Compose configuration providing the test environment:
 
 - **nginx**: Main web server with ngx-inference module
-- **echo-server**: Node.js service for request inspection and header validation
+- **echo-server**: Node.js service for request inspection and header validation (Docker/local testing only)
 - **mock-extproc**: Mock gRPC External Processing service for EPP module testing
 
 ### Kind Testing Environment (`kind-ngf/`)

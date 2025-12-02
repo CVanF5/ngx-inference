@@ -4,11 +4,12 @@ This directory contains a comprehensive test suite for validating the ngx-infere
 
 ## Overview
 
-Unlike the Docker-based tests that use a mock EPP, this test suite:
+Unlike the Docker-based tests that use a mock EPP and echo-server, this test suite:
 - Deploys a real Kubernetes cluster using kind
 - Runs a vLLM simulator (lightweight testing backend)
 - Installs the reference EPP via Helm (from the Gateway API Inference Extension project)
-- Tests the ngx-inference module's EPP functionality against the real reference EPP implementation
+- Tests all configurations directly against vLLM for consistent inference validation
+- Provides enhanced TLS error logging for certificate validation issues
 
 This provides realistic validation of the module's compatibility with the Gateway API Inference Extension specification.
 
