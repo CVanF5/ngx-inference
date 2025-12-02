@@ -309,7 +309,7 @@ unsafe fn read_request_body(
                         (*(*r).connection).log,
                         0,
                         #[allow(clippy::manual_c_str_literals)] // FFI code
-                        cstr_ptr(b"ngx-inference: BBR rejected request with HTTP 413 - actual payload size %uz exceeds limit %uz bytes\0".as_ptr()),
+                        cstr_ptr(b"ngx-inference: Module returning HTTP 413 - payload size %uz bytes exceeds BBR limit %uz bytes\0".as_ptr()),
                         total_read + len,
                         conf.bbr_max_body_size
                     );
@@ -347,7 +347,7 @@ unsafe fn read_request_body(
                         (*(*r).connection).log,
                         0,
                         #[allow(clippy::manual_c_str_literals)] // FFI code
-                        cstr_ptr(b"ngx-inference: BBR rejected request with HTTP 413 - actual payload size %uz exceeds limit %uz bytes\0".as_ptr()),
+                        cstr_ptr(b"ngx-inference: Module returning HTTP 413 - payload size %uz bytes exceeds BBR limit %uz bytes\0".as_ptr()),
                         total_read + file_size,
                         conf.bbr_max_body_size
                     );

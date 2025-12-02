@@ -586,7 +586,11 @@ pub fn epp_headers_blocking(
                     ngx_log_debug_http!(request, "ngx-inference: EPP returned no upstream");
                 }
                 Err(e) => {
-                    ngx_log_error_http!(request, "ngx-inference: EPP failed: {}", e);
+                    ngx_log_error_http!(
+                        request,
+                        "ngx-inference: EPP external service communication failed: {}",
+                        e
+                    );
                 }
             }
             grpc_result

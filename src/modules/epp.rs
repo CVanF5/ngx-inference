@@ -64,7 +64,7 @@ impl EppProcessor {
             Err(err) => {
                 ngx_log_info_http!(
                     request,
-                    "ngx-inference: EPP upstream selection failed: {}",
+                    "ngx-inference: EPP module failed to select upstream: {}",
                     err
                 );
                 if conf.epp_failure_mode_allow {
@@ -214,7 +214,11 @@ impl EppProcessor {
                 }
             }
             Err(err) => {
-                ngx_log_info_http!(request, "ngx-inference: EPP gRPC error: {}", err);
+                ngx_log_info_http!(
+                    request,
+                    "ngx-inference: EPP external service error: {}",
+                    err
+                );
                 return Err("epp grpc error");
             }
         }
