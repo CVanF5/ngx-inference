@@ -48,7 +48,6 @@ http {
             inference_bbr on;
             inference_bbr_max_body_size 52428800; # 50MB for AI workloads
             inference_bbr_default_model "gpt-3.5-turbo"; # Default model when none found
-            inference_bbr_failure_mode_allow off; # Fail-closed for production
 
             # Configure the inference module for EPP (Endpoint Picker Processor)
             inference_epp on;
@@ -57,6 +56,9 @@ http {
             inference_epp_failure_mode_allow off; # Fail-closed for production
             # inference_epp_tls off; # Disable TLS for development/testing
             # inference_epp_ca_file /etc/ssl/certs/ca.crt; # Custom CA file
+
+            # Default upstream fallback when EPP fails and failure_mode_allow is on
+            # inference_default_upstream "fallback-server:8080";
 
             # Proxy to the chosen upstream (will be determined by EPP)
             # Use the $inference_upstream variable set by the module
@@ -77,7 +79,6 @@ Current behavior and defaults
   - Directive `inference_bbr_header_name` configures the model header name to inject (default `X-Gateway-Model-Name`).
   - Directive `inference_bbr_max_body_size` sets maximum body size for BBR processing in bytes (default 10MB).
   - Directive `inference_bbr_default_model` sets the default model value when no model is found in request body (default `unknown`).
-  - Directive `inference_bbr_failure_mode_allow on|off` controls fail-open vs fail-closed behavior (default `off`).
   - Hybrid memory/file support: small bodies stay in memory, large bodies are read from NGINX temporary files.
   - Memory allocation pre-allocation is capped at 1MB to avoid large upfront allocations. Actual in-memory accumulation may grow up to the configured `inference_bbr_max_body_size` limit; large payloads spill to disk and are read incrementally.
 
@@ -87,15 +88,16 @@ Current behavior and defaults
   - Directive `inference_epp_header_name` configures the upstream header name to read from EPP responses (default `X-Inference-Upstream`).
   - Directive `inference_epp_timeout_ms` sets the gRPC timeout for EPP communication (default `200ms`).
   - Directive `inference_epp_failure_mode_allow on|off` controls fail-open vs fail-closed behavior (default `off`).
+  - Directive `inference_default_upstream` sets a fallback upstream when EPP fails and `inference_epp_failure_mode_allow` is `on`.
   - Directive `inference_epp_tls on|off` enables TLS for gRPC connections (default `on`).
   - Directive `inference_epp_ca_file /path/to/ca.crt` specifies CA certificate file path for TLS verification (optional).
   - EPP follows the Gateway API Inference Extension specification: performs headers-only exchange, reads header mutations from responses, and sets the upstream header for endpoint selection.
   - The `$inference_upstream` NGINX variable exposes the EPP-selected endpoint (read from the header configured by `inference_epp_header_name`) and can be used in `proxy_pass` directives.
 
 - Fail-open/closed:
-  - `inference_bbr_failure_mode_allow on|off` and `inference_epp_failure_mode_allow on|off` control fail-open vs fail-closed behavior.
-  - In fail-closed mode, BBR enforces size limits and may return `413 Request Entity Too Large` or `500 Internal Server Error` on processing errors; EPP failures return `502 Bad Gateway`.
-  - In fail-open mode, processing continues without terminating the request.
+  - `inference_epp_failure_mode_allow on|off` controls EPP fail-open vs fail-closed behavior.
+  - EPP fail-closed mode returns `500 Internal Server Error` on EPP processing failures.
+  - EPP fail-open mode continues processing when EPP fails. When `inference_epp_failure_mode_allow` is `on`, you can configure `inference_default_upstream` to specify a fallback upstream when EPP fails.
 
 
 
