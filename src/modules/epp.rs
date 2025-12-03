@@ -59,7 +59,7 @@ impl EppProcessor {
         match Self::pick_upstream_blocking(request, conf) {
             Ok(()) => {
                 ngx_log_debug_http!(request, "ngx-inference: EPP upstream selection completed");
-                core::Status::NGX_OK
+                core::Status::NGX_DECLINED
             }
             Err(err) => {
                 ngx_log_info_http!(
@@ -93,7 +93,7 @@ impl EppProcessor {
                         }
                     }
 
-                    core::Status::NGX_OK
+                    core::Status::NGX_DECLINED
                 } else {
                     ngx_log_debug_http!(
                         request,

@@ -700,11 +700,8 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
     // Stage 2: EPP (Endpoint Picker Processor) - headers-only exchange for upstream selection
     if conf.epp_enable {
         match EppProcessor::process_request(request, conf) {
-            core::Status::NGX_OK => {
-                // EPP processed successfully, continue
-            }
             core::Status::NGX_DECLINED => {
-                // EPP not needed or skipped, continue
+                // EPP processed successfully or was skipped, continue
             }
             core::Status::NGX_ERROR => {
                 unsafe {

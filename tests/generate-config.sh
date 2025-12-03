@@ -106,8 +106,8 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
 elif [[ "$ENVIRONMENT" == "kind" ]]; then
     MODULE_PATH="/usr/lib/nginx/modules/libngx_inference.so"
     MIMETYPES_PATH="/etc/nginx/mime.types"
-    # Use echo-server for BBR tests (simple HTTP backend)
-    UPSTREAM_HOST="echo-server.${KIND_NAMESPACE}.svc.cluster.local:80"
+    # Use vLLM server as the upstream for kind environment - it actually exists
+    UPSTREAM_HOST="vllm-llama3-8b-instruct.${KIND_NAMESPACE}.svc.cluster.local:8000"
     # The Helm chart creates the EPP service with -epp suffix
     # Use short service name (not FQDN) for gRPC DNS resolution compatibility
     EPP_HOST="vllm-llama3-8b-instruct-epp:9002"
