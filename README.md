@@ -20,10 +20,12 @@ Inference Module Architecture
 -------
 ```mermaid
 flowchart TD
-  A[Client Request] --> B[NGINX]
+  A[Client Request] --> B[Core]
   subgraph NGINX Pod
     subgraph NGINX Container
-      B --"(1) Request Body"--> C[Inference Module<br/> with Body-Based Routing]
+      subgraph NGINX Process
+        B --"(1) Request Body"--> C[Inference Module<br/> with Body-Based Routing]
+      end
     end
   end
   C --"(2) gRPC (Request Headers)"--> D[EPP Service<br/>Endpoint Picker]
