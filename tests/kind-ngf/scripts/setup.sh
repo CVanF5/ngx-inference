@@ -14,7 +14,7 @@ NC='\033[0m' # No Color
 # Configuration
 CLUSTER_NAME="ngx-inference-test"
 NAMESPACE="ngx-inference-test"
-IGW_CHART_VERSION="${IGW_CHART_VERSION:-v1.1.0}"
+IGW_CHART_VERSION="${IGW_CHART_VERSION:-v1.2.0}"
 
 # Script directory
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -133,12 +133,9 @@ deploy_vllm_and_epp() {
         --namespace "$NAMESPACE" \
         --create-namespace \
         --set inferencePool.modelServers.matchLabels.app=vllm-llama3-8b-instruct \
-        --set inferenceExtension.flags[0].name=v \
-        --set inferenceExtension.flags[0].value=4 \
-        --set inferenceExtension.flags[1].name=cert-path \
-        --set inferenceExtension.flags[1].value=/etc/tls \
-        --set inferenceExtension.flags[2].name=secure-serving \
-        --set inferenceExtension.flags[2].value=true \
+        --set inferenceExtension.flags.v=4 \
+        --set inferenceExtension.flags.cert-path=/etc/tls \
+        --set inferenceExtension.flags.secure-serving=true \
         --set provider.name=none \
         oci://registry.k8s.io/gateway-api-inference-extension/charts/inferencepool \
         --version "$IGW_CHART_VERSION"
