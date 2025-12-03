@@ -117,20 +117,18 @@ test-kind:
 stop:
 	@echo "==> Stopping all services..."
 	@# Stop Docker services
-	@docker compose -f $(DOCKER_COMPOSE_MAIN) down --remove-orphans 2>/dev/null || true
+	@docker compose -f $(DOCKER_COMPOSE_MAIN) down --remove-orphans || true
 	@# Stop kind cluster
-	@kind delete cluster --name $(KIND_CLUSTER_NAME) 2>/dev/null || true
+	@kind delete cluster --name $(KIND_CLUSTER_NAME) || true
 ifndef GITHUB_ACTIONS
 	@# Stop nginx if running
-	@-[ -f $(PID_FILE) ] && kill -TERM $$(cat $(PID_FILE)) 2>/dev/null || true
-	@-[ -f $(PID_FILE) ] && rm -f $(PID_FILE) 2>/dev/null || true
-	@# Stop backend services using PID files
-	@-kill $$(cat /tmp/echo-server.pid 2>/dev/null) 2>/dev/null || true
-	@-kill $$(cat /tmp/extproc_mock.pid 2>/dev/null) 2>/dev/null || true
-	@rm -f /tmp/extproc_mock.pid /tmp/echo-server.pid 2>/dev/null || true
-	@# Fallback: Stop processes by name/port (in case PID files are missing)
-	@-pkill -f "custom-echo-server.js" 2>/dev/null || true
-	@-pkill -f "extproc_mock" 2>/dev/null || true
+	@-[ -f $(PID_FILE) ] && kill -TERM $$(cat $(PID_FILE)) || true
+	@-[ -f $(PID_FILE) ] && rm -f $(PID_FILE) || true
+	@# Stop backend services using PID files if they exist, otherwise use pkill
+	@-sh -c 'if [ -f /tmp/echo-server.pid ]; then kill $$(cat /tmp/echo-server.pid) || true; else pkill -f "custom-echo-server.js" 2>/dev/null || true; fi' 2>/dev/null || true
+	@-rm -f /tmp/echo-server.pid
+	@-sh -c 'if [ -f /tmp/extproc_mock.pid ]; then kill $$(cat /tmp/extproc_mock.pid) || true; else pkill -f "extproc_mock" 2>/dev/null || true; fi' 2>/dev/null || true
+	@-rm -f /tmp/extproc_mock.pid
 endif
 	@echo "✅ All services stopped."
 
