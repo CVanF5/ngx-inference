@@ -72,7 +72,7 @@ display_logs() {
     local nginx_pod=$(kubectl get pods -n "$NAMESPACE" -l app=nginx-inference -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
     if [ -n "$nginx_pod" ]; then
         echo -e "${BLUE}  NGINX logs:${NC}"
-        kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=8 2>/dev/null | sed 's/^/    /' || true
+        kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=15 | sed 's/^/    /' || true
     fi
 }
 
