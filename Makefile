@@ -148,6 +148,8 @@ lint:
 	@echo "==> Running Rust linting and formatting checks..."
 	@echo "Checking code formatting..."
 	@cargo fmt --all -- --check || (echo "❌ Code formatting issues found. Run 'cargo fmt --all' to fix." && exit 1)
+	@echo "Running strict compilation check for memory safety errors..."
+	@RUSTFLAGS="-D unsafe-op-in-unsafe-fn -D warnings" cargo check --all-targets --all-features || (echo "❌ Memory safety or compilation errors found." && exit 1)
 	@echo "Running Clippy linter..."
 	@cargo clippy --all-targets --all-features -- -D warnings -A clippy::doc-lazy-continuation -A clippy::enum-variant-names || (echo "❌ Clippy issues found." && exit 1)
 	@echo "Checking for whitespace issues using git..."

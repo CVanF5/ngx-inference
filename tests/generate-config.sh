@@ -140,8 +140,6 @@ fi
 echo "Generating nginx configuration..."
 echo "  Environment: $ENVIRONMENT"
 echo "  Template: $TEMPLATE"
-echo "  Module path: $MODULE_PATH"
-echo "  Mime types path: $MIMETYPES_PATH"
 echo "  Output: $OUTPUT_FILE"
 
 # Create output directory if it doesn't exist

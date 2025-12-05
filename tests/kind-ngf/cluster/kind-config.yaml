@@ -1,18 +1,29 @@
 # Kind cluster configuration for NGINX Gateway Fabric testing
-# Creates a single-node cluster with port mapping to access NodePort services
+# Creates a 3-node HA control plane cluster with port mapping to access NodePort services
 kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 name: ngx-inference-test
 nodes:
   - role: control-plane
     kubeadmConfigPatches:
-      - |
-        kind: InitConfiguration
-        nodeRegistration:
-          kubeletExtraArgs:
-            node-labels: "ingress-ready=true"
+    - |
+      kind: InitConfiguration
+      nodeRegistration:
+        taints: []
     extraPortMappings:
       # Map host port 30080 to NodePort 30080 for direct NodePort access
       - containerPort: 30080
         hostPort: 30080
         protocol: TCP
+  - role: control-plane
+    kubeadmConfigPatches:
+    - |
+      kind: JoinConfiguration
+      nodeRegistration:
+        taints: []
+  - role: control-plane
+    kubeadmConfigPatches:
+    - |
+      kind: JoinConfiguration
+      nodeRegistration:
+        taints: []

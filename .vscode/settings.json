@@ -1,0 +1,18 @@
+{
+    "rust-analyzer.cargo.features": [
+        "export-modules",
+        "extproc-mock",
+        "vendored"
+    ],
+    "rust-analyzer.cargo.allFeatures": false,
+    "rust-analyzer.cargo.buildScripts.enable": true,
+    "rust-analyzer.check.command": "check",
+    "rust-analyzer.check.allTargets": true,
+    "rust-analyzer.procMacro.enable": true,
+    "rust-analyzer.diagnostics.disabled": [
+        "inactive-code"
+    ],
+    "rust-analyzer.server.extraEnv": {
+        "NGX_NO_SIGNATURE_CHECK": "1"
+    }
+}

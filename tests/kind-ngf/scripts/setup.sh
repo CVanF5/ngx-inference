@@ -41,6 +41,50 @@ create_cluster() {
     echo ""
 }
 
+# Wait for all nodes to be ready
+wait_for_nodes() {
+    echo -e "${YELLOW}Waiting for all nodes to be ready...${NC}"
+
+    # Get expected number of nodes from kind config
+    local expected_nodes=$(grep -c "role:" "$TEST_DIR/cluster/kind-config.yaml")
+    echo "Expected nodes: $expected_nodes"
+
+    # Wait for all nodes to exist
+    echo -e "${YELLOW}Waiting for $expected_nodes nodes to be registered...${NC}"
+    local timeout=120
+    local count=0
+    while [ $count -lt $timeout ]; do
+        local current_nodes=$(kubectl get nodes --no-headers 2>/dev/null | wc -l)
+        if [ "$current_nodes" -eq "$expected_nodes" ]; then
+            break
+        fi
+        echo "Nodes registered: $current_nodes/$expected_nodes"
+        sleep 2
+        ((count += 2))
+    done
+
+    if [ $count -ge $timeout ]; then
+        echo -e "${RED}Timeout waiting for nodes to be registered${NC}"
+        exit 1
+    fi
+
+    # Wait for all nodes to be ready
+    echo -e "${YELLOW}Waiting for all $expected_nodes nodes to be ready...${NC}"
+    if ! kubectl wait --for=condition=ready nodes --all --timeout=300s; then
+        echo -e "${RED}Timeout waiting for nodes to be ready${NC}"
+        echo "Current node status:"
+        kubectl get nodes
+        exit 1
+    fi
+
+    echo -e "${GREEN}✓ All $expected_nodes nodes are ready${NC}"
+
+    # Show node distribution for verification
+    echo "Node status:"
+    kubectl get nodes -o wide
+    echo ""
+}
+
 # Build and load images
 build_and_load_image() {
     echo -e "${YELLOW}Building NGINX image with ngx-inference module...${NC}"
@@ -268,6 +312,7 @@ print_access_info() {
 main() {
     create_cluster
     build_and_load_image
+    wait_for_nodes
     deploy_manifests
     generate_tls_certificate
     deploy_vllm_and_epp

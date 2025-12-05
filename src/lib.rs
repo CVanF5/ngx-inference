@@ -53,11 +53,11 @@ impl http::HttpModule for Module {
 
     unsafe extern "C" fn preconfiguration(cf: *mut ngx_conf_t) -> ngx_int_t {
         // Register $inference_upstream variable so it can be used in NGINX config (e.g. proxy_pass http://$inference_upstream;)
-        let cf_ref = &mut *cf;
+        let cf_ref = unsafe { &mut *cf };
         // Allocate variable name from configuration pool
-        let name = &mut ngx_str_t::from_str(cf_ref.pool, "inference_upstream") as *mut _;
+        let name = unsafe { &mut ngx_str_t::from_str(cf_ref.pool, "inference_upstream") as *mut _ };
         // Add variable with no special flags
-        let v = ngx_http_add_variable(cf, name, 0);
+        let v = unsafe { ngx_http_add_variable(cf, name, 0) };
         if v.is_null() {
             return core::Status::NGX_ERROR.into();
         }
@@ -71,17 +71,19 @@ impl http::HttpModule for Module {
 
     unsafe extern "C" fn postconfiguration(cf: *mut ngx_conf_t) -> ngx_int_t {
         // SAFETY: called by NGINX with non-null cf
-        let cf = &mut *cf;
+        let cf = unsafe { &mut *cf };
         let cmcf = NgxHttpCoreModule::main_conf_mut(cf).expect("http core main conf");
 
         // Register an Access phase handler to run before upstream selection.
-        let h = ngx_array_push(
-            &mut cmcf.phases[ngx_http_phases_NGX_HTTP_ACCESS_PHASE as usize].handlers,
-        ) as *mut ngx_http_handler_pt;
+        let h = unsafe {
+            ngx_array_push(
+                &mut cmcf.phases[ngx_http_phases_NGX_HTTP_ACCESS_PHASE as usize].handlers,
+            ) as *mut ngx_http_handler_pt
+        };
         if h.is_null() {
             return core::Status::NGX_ERROR.into();
         }
-        *h = Some(inference_access_handler);
+        unsafe { *h = Some(inference_access_handler) };
         core::Status::NGX_OK.into()
     }
 }

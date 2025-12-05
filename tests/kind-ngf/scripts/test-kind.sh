@@ -67,6 +67,15 @@ test_nodeport_connectivity() {
     return 1
 }
 
+# Display recent NGINX logs
+display_logs() {
+    local nginx_pod=$(kubectl get pods -n "$NAMESPACE" -l app=nginx-inference -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    if [ -n "$nginx_pod" ]; then
+        echo -e "${BLUE}  NGINX logs:${NC}"
+        kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=8 2>/dev/null | sed 's/^/    /' || true
+    fi
+}
+
 # Apply configuration for a test scenario
 apply_test_config() {
     local scenario=$1
@@ -175,15 +184,12 @@ run_test_for_scenario() {
     # Note: BBR functionality is validated through the /v1/chat/completions endpoint tests below
     # The BBR module extracts model names from request bodies regardless of the specific endpoint
 
+    # Show logs before test
+    display_logs
+
     # Test EPP if enabled, or test expected failure if disabled
     if [ "$expected_epp" = "enabled" ]; then
         echo "  Testing EPP endpoint (/v1/chat/completions)..."
-
-        # Show recent logs before test
-        if [ -n "$nginx_pod" ]; then
-            echo -e "${BLUE}  NGINX logs before EPP test:${NC}"
-            kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=5 2>/dev/null | sed 's/^/    /' || true
-        fi
 
         local response=$(curl -s -X POST "http://localhost:$nodeport/v1/chat/completions" \
             -H 'Content-Type: application/json' \
@@ -192,12 +198,6 @@ run_test_for_scenario() {
 
         local http_code=$(echo "$response" | grep -o 'HTTPSTATUS:[0-9]*' | cut -d: -f2)
         local body=$(echo "$response" | sed 's/HTTPSTATUS:[0-9]*$//')
-
-        # Show logs immediately after request
-        if [ -n "$nginx_pod" ]; then
-            echo -e "${BLUE}  NGINX logs after EPP request:${NC}"
-            kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=10 2>/dev/null | sed 's/^/    /' || true
-        fi
 
         if [ "$http_code" = "200" ]; then
             echo -e "${GREEN}   EPP endpoint responded: HTTP $http_code${NC}"
@@ -267,14 +267,10 @@ run_test_for_scenario() {
             echo -e "${YELLOW}   vLLM chat/completions: HTTP $vllm_http_code${NC}"
             echo -e "${YELLOW}  Response body: $(echo "$vllm_body" | head -c 100)...${NC}"
         fi
-
-        # Show EPP logs for the vLLM request
-        if [ -n "$nginx_pod" ]; then
-            echo -e "${BLUE}  NGINX logs after vLLM request (EPP activity):${NC}"
-            local recent_logs=$(kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=15 2>/dev/null)
-            echo "$recent_logs" | grep -E "(EPP gRPC|Selected upstream|DEBUG: Found header.*with value)" | sed 's/^/    /' || echo "    (No EPP logs found)"
-        fi
     fi
+
+    # Show logs after test
+    display_logs
 
     echo ""
 

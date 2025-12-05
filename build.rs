@@ -4,7 +4,9 @@ fn main() {
 
     // Ensure protoc is available using vendored binary to avoid system dependency.
     let protoc_path = protoc_bin_vendored::protoc_bin_path().expect("vendored protoc not found");
-    std::env::set_var("PROTOC", &protoc_path);
+    unsafe {
+        std::env::set_var("PROTOC", &protoc_path);
+    }
 
     // On macOS, allow unresolved NGINX symbols to be resolved at load time.
     // This enables building the dynamic module outside of the NGINX build system.

@@ -62,7 +62,7 @@ impl EppProcessor {
                 core::Status::NGX_DECLINED
             }
             Err(err) => {
-                ngx_log_info_http!(
+                ngx_log_warn_http!(
                     request,
                     "ngx-inference: EPP module failed to select upstream: {}",
                     err
