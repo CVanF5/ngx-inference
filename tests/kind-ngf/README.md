@@ -15,32 +15,19 @@ This provides realistic validation of the module's compatibility with the Gatewa
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────┐
-│ kind Cluster (ngx-inference-test)                       │
-│                                                          │
-│  ┌──────────────┐    ┌─────────────────┐               │
-│  │   Client     │───▶│  NGINX (port    │               │
-│  │  (curl)      │    │  80 → 8080)     │               │
-│  └──────────────┘    │  with module    │               │
-│                      └────────┬────────┘               │
-│                               │                         │
-│                               │ gRPC (EPP)             │
-│                               ▼                         │
-│                      ┌─────────────────┐               │
-│                      │  Reference EPP  │               │
-│                      │  (port 9001)    │               │
-│                      └────────┬────────┘               │
-│                               │                         │
-│                               │ reads InferencePool    │
-│                               │ selects endpoint       │
-│                               ▼                         │
-│                      ┌─────────────────┐               │
-│                      │  vLLM Simulator │               │
-│                      │  (3 replicas)   │               │
-│                      │  (port 8000)    │               │
-│                      └─────────────────┘               │
-└─────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph cluster["kind Cluster (ngx-inference-test)"]
+        Client["Client<br/>(curl)"]
+        NGINX["NGINX<br/>(port 80 → 8080)<br/>with module"]
+        RefEPP["Reference EPP<br/>(port 9001)"]
+        vLLM["vLLM Simulator<br/>(3 replicas)<br/>(port 8000)"]
+
+        Client -->|HTTP Request| NGINX
+        NGINX -->|"gRPC (EPP)"| RefEPP
+        RefEPP -->|"reads InferencePool<br/>selects endpoint"| vLLM
+        NGINX -.->|"proxies to selected<br/>endpoint"| vLLM
+    end
 ```
 
 ## Quick Start
@@ -83,11 +70,13 @@ This automated script will:
 make test-kind
 ```
 
-The test suite runs **all four configuration scenarios** automatically:
+The test suite runs **all six configuration scenarios** automatically:
 - **BBR ON + EPP OFF**: Model extraction only
 - **BBR OFF + EPP ON**: Endpoint selection only  
 - **BBR ON + EPP ON**: Both features enabled
 - **BBR OFF + EPP OFF**: Direct proxy (baseline)
+- **EPP Untrusted TLS (Allow)**: TLS certificate validation with fail-open mode
+- **EPP Untrusted TLS (Deny)**: TLS certificate validation with fail-closed mode
 
 Each scenario is tested by:
 1. Generating the appropriate NGINX configuration using `generate-config.sh`
@@ -197,7 +186,7 @@ kubectl create configmap nginx-inference-bbr_on_epp_on \
 make test-kind
 ```
 
-This runs the complete test matrix across all four configuration scenarios:
+This runs the complete test matrix across all six configuration scenarios:
 
 | Scenario | BBR | EPP | Tests |
 |----------|-----|-----|-------|
@@ -205,6 +194,8 @@ This runs the complete test matrix across all four configuration scenarios:
 | bbr_off_epp_on | ✗ | ✓ | Endpoint selection via reference EPP |
 | bbr_on_epp_on | ✓ | ✓ | Both BBR + EPP active |
 | bbr_off_epp_off | ✗ | ✗ | Baseline (no processing) |
+| bbr_off_epp_on_untrusted_tls_allow | ✗ | ✓ | EPP with untrusted TLS (fail-open) |
+| bbr_off_epp_on_untrusted_tls_deny | ✗ | ✓ | EPP with untrusted TLS (fail-closed) |
 
 Each scenario validates:
 1. NGINX health check
@@ -445,7 +436,7 @@ docker rmi ngx-inference:latest
 | EPP | Mock implementation | Real reference EPP |
 | Backend | Echo server | vLLM Simulator |
 | Environment | Docker Compose | Kubernetes cluster |
-| Test Matrix | ✓ All 4 scenarios | ✓ All 4 scenarios |
+| Test Matrix | ✓ 4 basic scenarios | ✓ 6 scenarios (incl. TLS) |
 | Config Method | File replacement | ConfigMap + rollout |
 | Setup Time | ~1 minute | ~2 minutes |
 | Resource Usage | Low | Low |

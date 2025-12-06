@@ -166,16 +166,6 @@ Troubleshooting
 - BBR processes JSON directly in the module - ensure request bodies contain valid JSON with a "model" field.
 - Use `error_log` and debug logging to verify module activation. BBR logs body reading and size limit enforcement; EPP logs gRPC errors with detailed TLS diagnostics. Set `error_log` to `debug` to observe processing details.
 
-Roadmap
--------
-- Validate EPP and BBR implementations against Gateway API Inference Extension conformance tests.
-- Align exact header names and semantics to the upstream specification and reference implementations.
-- Validate large body handling and back-pressure for BBR; refine chunked reads/writes and resource usage for very large payloads.
-- Connection pooling and caching for improved performance at scale.
-- Enhanced TLS configuration options (client certificates, cipher suites, etc.).
-- ✅ **Completed**: Enhanced TLS error logging with detailed certificate validation messages
-- ✅ **Completed**: Streamlined test infrastructure with consistent vLLM backend usage
-
 License
 -------
 Apache-2.0 (to align with upstream projects).

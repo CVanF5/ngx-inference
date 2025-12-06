@@ -13,7 +13,8 @@ Main test runner that validates BBR (Body-Based Routing) and EPP (External Proce
 - **BBR OFF + EPP ON**: Tests upstream selection with EPP routing to vLLM
 - **BBR ON + EPP ON**: Tests both modules active with vLLM responses
 - **BBR OFF + EPP OFF**: Tests direct vLLM routing (no processing)
-- **EPP Untrusted TLS**: Tests TLS certificate validation with enhanced error logging
+- **EPP Untrusted TLS (Allow)**: Tests TLS certificate validation with fail-open mode (Kind only)
+- **EPP Untrusted TLS (Deny)**: Tests TLS certificate validation with fail-closed mode (Kind only)
 
 **Execution Modes:**
 - **Local Mode**: Uses locally compiled nginx module with local backend services

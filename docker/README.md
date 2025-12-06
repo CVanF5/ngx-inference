@@ -5,7 +5,7 @@ This directory contains Docker configurations for the ngx-inference module and r
 ## Directory Structure
 
 - `nginx/` - NGINX configurations and Dockerfile for the main inference gateway
-- `mock-extproc/` - Mock external processor service implementing EPP (Endpoint Picker Processor) and BBR functionality
+- `mock-extproc/` - Mock external processor service implementing EPP (Endpoint Picker Processor)
 - `echo-server/` - Simple Node.js echo server for testing
 
 ## Quick Start
@@ -59,7 +59,9 @@ docker run -p 8081:80 \
 
 ## Mock External Processor
 
-The `mock-extproc/` directory contains the mock external processor service that implements both EPP (Endpoint Picker Processor) and BBR (Body Buffer & Rewrite) functionality via gRPC. It uses the `extproc_mock` binary from this repository.
+The `mock-extproc/` directory contains the mock external processor service that implements EPP (Endpoint Picker Processor) functionality via gRPC. It uses the `extproc_mock` binary from this repository.
+
+**Note**: BBR (Body-Based Routing) is implemented directly in the ngx-inference module, not in the external processor. The mock service only handles EPP endpoint selection.
 
 ### Usage
 
