@@ -6,12 +6,12 @@ services:
       context: ..
     container_name: ngx-inference-nginx
     ports:
-      - "8081:80"
+      - "8081:8081"
     depends_on:
       - mock-epp
       - echo-server
     volumes:
-      - ../docker/nginx/nginx-test.conf:/etc/nginx/nginx.conf:ro
+      - /tmp/nginx-docker.conf:/etc/nginx/nginx.conf:ro
 
   # Mock External Processor for EPP (Endpoint Picker Processor) listening on :9001
   mock-epp:

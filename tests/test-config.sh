@@ -122,8 +122,13 @@ DEFAULT_SERVER_CONFIG="$(pwd)/tests/configs/bbr_on_epp_on.conf"
 CONFIG_FILE="/tmp/nginx-ngx-inference-default.conf"
 NGINX_PID_FILE="/tmp/nginx-ngx-inference.pid"
 
-# Set nginx port - both environments use 8081 to avoid privilege issues
-NGINX_PORT="8081"
+# Set nginx port based on environment
+# Local: 8080, Docker: 8081, Kind: 8082
+if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
+    NGINX_PORT="8081"
+else
+    NGINX_PORT="8080"
+fi
 DOCKER_COMPOSE_FILE="$(pwd)/tests/docker-compose.yml"
 
 # Module paths for different environments
@@ -218,6 +223,42 @@ create_config_from_template "$BASE_CONFIG_FILE" "$CONFIG_FILE" "$DEFAULT_SERVER_
 echo -e "${GREEN}✓ Default configuration created at $CONFIG_FILE${NC}"
 echo ""
 
+# Display logs for Docker services
+display_logs() {
+    local message=$1
+
+    echo ""
+    echo -e "${BLUE}=== $message ===${NC}"
+
+    if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
+        # Docker environment - show logs from containers
+        echo -e "${BLUE}Nginx Logs:${NC}"
+        docker compose -f "$DOCKER_COMPOSE_FILE" logs --tail=15 nginx 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
+
+        echo -e "${BLUE}Echo Server Logs:${NC}"
+        docker compose -f "$DOCKER_COMPOSE_FILE" logs --tail=10 echo-server 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
+
+        echo -e "${BLUE}Mock ExtProc Logs:${NC}"
+        docker compose -f "$DOCKER_COMPOSE_FILE" logs --tail=10 mock-extproc 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
+    else
+        # Local environment - show log files
+        echo -e "${BLUE}Nginx Error Log:${NC}"
+        if [ -f /tmp/nginx-ngx-inference-error.log ]; then
+            tail -15 /tmp/nginx-ngx-inference-error.log 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
+        else
+            echo "  (Log file not found)"
+        fi
+
+        echo -e "${BLUE}Nginx Access Log:${NC}"
+        if [ -f /tmp/nginx-ngx-inference-access.log ]; then
+            tail -10 /tmp/nginx-ngx-inference-access.log 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
+        else
+            echo "  (Log file not found)"
+        fi
+    fi
+    echo ""
+}
+
 # Function to test configuration
 test_configuration() {
     local config_name="$1"
@@ -234,51 +275,91 @@ test_configuration() {
 
     create_config_from_template "$base_config" "$temp_config" "$server_config"
 
-    # Stop current nginx if running
-    if [[ -f "$NGINX_PID_FILE" ]] && kill -0 $(cat "$NGINX_PID_FILE") 2>/dev/null; then
-        local pid=$(cat "$NGINX_PID_FILE")
-        kill $pid
+    # Docker vs Local environment handling
+    if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
+        # Docker environment - update container config and restart
+        echo "  Updating nginx container with test configuration..."
 
-        # Wait for process to actually terminate
-        local wait_count=0
-        while [[ $wait_count -lt $NGINX_SHUTDOWN_TIMEOUT ]] && kill -0 $pid 2>/dev/null; do
-            sleep 0.1
-            ((wait_count++))
-        done
+        # Copy config to a location the container can access
+        local docker_config="/tmp/nginx-docker-test.conf"
+        cp "$temp_config" "$docker_config"
 
-        # Force kill if still running
-        if kill -0 $pid 2>/dev/null; then
-            echo -e "${YELLOW}  Warning: Force killing nginx${NC}"
-            kill -9 $pid
-            sleep 0.2  # Brief pause after force kill
-        fi
-    fi
+        # Stop nginx container
+        docker compose -f "$DOCKER_COMPOSE_FILE" stop nginx >/dev/null 2>&1
 
-    # Start nginx with new config
-    echo "  Starting nginx with test configuration..."
-    if nginx -p /tmp -c "$temp_config"; then
-        echo -e "${GREEN}  ✓ Nginx started${NC}"
+        # Update the docker-compose to use the new config (by mounting it)
+        # Restart with the new configuration
+        docker compose -f "$DOCKER_COMPOSE_FILE" up -d nginx \
+            -v "$docker_config:/etc/nginx/nginx.conf:ro" >/dev/null 2>&1
 
-        # Wait for nginx to be ready to serve requests
+        # Wait for nginx to be ready
         local wait_count=0
         while [[ $wait_count -lt $NGINX_STARTUP_TIMEOUT ]]; do
-            if curl -sf http://localhost:$NGINX_PORT/ >/dev/null 2>&1; then
-                echo -e "${GREEN}  ✓ Nginx is ready to serve requests${NC}"
+            if curl -sf http://localhost:$NGINX_PORT/health >/dev/null 2>&1; then
+                echo -e "${GREEN}  ✓ Nginx container restarted and ready${NC}"
                 break
             fi
             if [[ $wait_count -ge $((NGINX_STARTUP_TIMEOUT - 1)) ]]; then
-                echo -e "${RED}  ✗ Nginx not responding after $((NGINX_STARTUP_TIMEOUT / 10)) seconds${NC}"
-                rm -f "$temp_config"
+                echo -e "${RED}  ✗ Nginx container not responding after $((NGINX_STARTUP_TIMEOUT / 10)) seconds${NC}"
+                rm -f "$temp_config" "$docker_config"
                 return 1
             fi
             sleep 0.1
             ((wait_count++))
         done
     else
-        echo -e "${RED}  ✗ Failed to start nginx${NC}"
-        rm -f "$temp_config"
-        return 1
-    fi    # Test BBR endpoint
+        # Local environment - restart nginx process
+        # Stop current nginx if running
+        if [[ -f "$NGINX_PID_FILE" ]] && kill -0 $(cat "$NGINX_PID_FILE") 2>/dev/null; then
+            local pid=$(cat "$NGINX_PID_FILE")
+            kill $pid
+
+            # Wait for process to actually terminate
+            local wait_count=0
+            while [[ $wait_count -lt $NGINX_SHUTDOWN_TIMEOUT ]] && kill -0 $pid 2>/dev/null; do
+                sleep 0.1
+                ((wait_count++))
+            done
+
+            # Force kill if still running
+            if kill -0 $pid 2>/dev/null; then
+                echo -e "${YELLOW}  Warning: Force killing nginx${NC}"
+                kill -9 $pid
+                sleep 0.2  # Brief pause after force kill
+            fi
+        fi
+
+        # Start nginx with new config
+        echo "  Starting nginx with test configuration..."
+        if nginx -p /tmp -c "$temp_config"; then
+            echo -e "${GREEN}  ✓ Nginx started${NC}"
+
+            # Wait for nginx to be ready to serve requests
+            local wait_count=0
+            while [[ $wait_count -lt $NGINX_STARTUP_TIMEOUT ]]; do
+                if curl -sf http://localhost:$NGINX_PORT/ >/dev/null 2>&1; then
+                    echo -e "${GREEN}  ✓ Nginx is ready to serve requests${NC}"
+                    break
+                fi
+                if [[ $wait_count -ge $((NGINX_STARTUP_TIMEOUT - 1)) ]]; then
+                    echo -e "${RED}  ✗ Nginx not responding after $((NGINX_STARTUP_TIMEOUT / 10)) seconds${NC}"
+                    rm -f "$temp_config"
+                    return 1
+                fi
+                sleep 0.1
+                ((wait_count++))
+            done
+        else
+            echo -e "${RED}  ✗ Failed to start nginx${NC}"
+            rm -f "$temp_config"
+            return 1
+        fi
+    fi
+
+    # Display logs before tests
+    display_logs "Logs Before Test: $test_name"
+
+    # Test BBR endpoint
     test_bbr_endpoint "$expected_bbr"
     local bbr_result=$?
 
@@ -290,8 +371,14 @@ test_configuration() {
     test_epp_endpoint "$expected_epp"
     local epp_result=$?
 
+    # Display logs after tests
+    display_logs "Logs After Test: $test_name"
+
     # Cleanup temp config
     rm -f "$temp_config"
+    if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
+        rm -f "/tmp/nginx-docker-test.conf"
+    fi
 
     if [[ $bbr_result -eq 0 && $bbr_large_result -eq 0 && $epp_result -eq 0 ]]; then
         echo -e "${GREEN}  ✓ Test passed${NC}"
@@ -495,8 +582,8 @@ else
     # For local environment, services should already be started by make test-local
     echo -e "${YELLOW}Using local backend services (started by make test-local)...${NC}"
 
-    # Check if echo server is ready (local environment uses port 8080)
-    if ! wait_for_service "http://localhost:8080/health" "Echo server"; then
+    # Check if echo server is ready (local environment uses port 8000)
+    if ! wait_for_service "http://localhost:8000/health" "Echo server"; then
         echo -e "${RED}✗ Echo server not ready - make sure 'make test-local' started it properly${NC}"
         exit 1
     fi
@@ -510,9 +597,15 @@ fi
 
 echo ""
 
-# Docker environment uses a simplified test approach
+# Docker environment uses a fixed configuration approach (container is already built with config)
+# Local environment runs multiple configuration tests
 if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
-    echo -e "${YELLOW}Running Docker environment tests...${NC}"
+    echo -e "${YELLOW}Running Docker environment tests with fixed configuration...${NC}"
+    echo -e "${YELLOW}(Docker tests use the configuration built into the container)${NC}"
+    echo ""
+
+    # Display logs before tests
+    display_logs "Docker Container Logs Before Tests"
 
     # Test basic connectivity
     echo "Testing basic connectivity..."
@@ -550,9 +643,10 @@ if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
         exit 1
     fi
 
-    echo ""
+    # Display logs after tests
+    display_logs "Docker Container Logs After Tests"
 
-    # Display Docker log information
+    echo ""
     echo -e "${YELLOW}📋 Docker Log Locations for troubleshooting:${NC}"
     echo -e "  ${BLUE}Nginx Logs:${NC}      Use 'docker compose -f tests/docker-compose.yml logs nginx' to view nginx logs"
     echo -e "  ${BLUE}All Services:${NC}    Use 'docker compose -f tests/docker-compose.yml logs' to view all container logs"
@@ -563,14 +657,15 @@ if [ "${DOCKER_ENVIRONMENT:-}" = "main" ]; then
 fi
 
 # Local environment tests with multiple configurations
-
-# Run tests
 test1_result=0
 test2_result=0
 test3_result=0
 test4_result=0
 
 # Test 1: BBR ON + EPP OFF
+echo -e "${YELLOW}========================================${NC}"
+echo -e "${YELLOW}Test 1 of 4: BBR ON + EPP OFF${NC}"
+echo -e "${YELLOW}========================================${NC}"
 if test_configuration "bbr_on_epp_off" "BBR ON + EPP OFF" "enabled" "disabled"; then
     test1_result=0
 else
@@ -580,6 +675,9 @@ fi
 echo ""
 
 # Test 2: BBR OFF + EPP ON
+echo -e "${YELLOW}========================================${NC}"
+echo -e "${YELLOW}Test 2 of 4: BBR OFF + EPP ON${NC}"
+echo -e "${YELLOW}========================================${NC}"
 if test_configuration "bbr_off_epp_on" "BBR OFF + EPP ON" "disabled" "enabled"; then
     test2_result=0
 else
@@ -588,7 +686,10 @@ fi
 
 echo ""
 
-# Test 3: Both ON
+# Test 3: BBR ON + EPP ON
+echo -e "${YELLOW}========================================${NC}"
+echo -e "${YELLOW}Test 3 of 4: BBR ON + EPP ON${NC}"
+echo -e "${YELLOW}========================================${NC}"
 if test_configuration "bbr_on_epp_on" "BBR ON + EPP ON" "enabled" "enabled"; then
     test3_result=0
 else
@@ -597,7 +698,10 @@ fi
 
 echo ""
 
-# Test 4: Both OFF
+# Test 4: BBR OFF + EPP OFF
+echo -e "${YELLOW}========================================${NC}"
+echo -e "${YELLOW}Test 4 of 4: BBR OFF + EPP OFF${NC}"
+echo -e "${YELLOW}========================================${NC}"
 if test_configuration "bbr_off_epp_off" "BBR OFF + EPP OFF" "disabled" "disabled"; then
     test4_result=0
 else
@@ -638,8 +742,6 @@ else
 fi
 
 echo ""
-
-# Display nginx log locations for troubleshooting:
 echo -e "${YELLOW}📋 Nginx Log Locations for troubleshooting:${NC}"
 echo -e "  ${BLUE}Access Log:${NC}  /tmp/nginx-ngx-inference-access.log"
 echo -e "  ${BLUE}Error Log:${NC}   /tmp/nginx-ngx-inference-error.log"

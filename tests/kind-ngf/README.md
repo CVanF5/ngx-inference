@@ -168,13 +168,24 @@ kubectl apply -f tests/kind-ngf/manifests/03-inferencepool.yaml
 
 ### 5. Deploy NGINX with Module
 
-```bash
-kubectl apply -f tests/kind-ngf/manifests/04-nginx-inference.yaml
+The setup script now generates NGINX configurations dynamically using `generate-config.sh` (just like local/docker tests):
 
-# Wait for NGINX to be ready
-kubectl wait --for=condition=ready pod -l app=nginx-inference \
-  -n ngx-inference-test --timeout=60s
+```bash
+# The setup.sh script handles this automatically, but if doing manually:
+
+# Generate initial config
+./tests/generate-config.sh -e kind -o /tmp/nginx-kind.conf -s bbr_on_epp_on -n ngx-inference-test
+
+# Create ConfigMap
+kubectl create configmap nginx-inference-bbr_on_epp_on \
+  --from-file=nginx.conf=/tmp/nginx-kind.conf \
+  -n ngx-inference-test
+
+# Create Service and Deployment (see setup.sh for full YAML)
+# The deployment references the ConfigMap for configuration
 ```
+
+**Note**: Each test scenario creates its own unique ConfigMap (e.g., `nginx-inference-bbr_on_epp_on`, `nginx-inference-bbr_off_epp_on`), which remain in the cluster for inspection after tests complete.
 
 ## Testing
 
@@ -276,19 +287,54 @@ kubectl exec -it -n ngx-inference-test \
 
 ### NGINX Configuration
 
-The NGINX configuration is stored in a ConfigMap and includes:
-- Module loading: `load_module /usr/lib/nginx/modules/libngx_inference.so`
-- EPP endpoint: `inference_epp_endpoint "reference-epp.ngx-inference-test.svc.cluster.local:9001"`
-- Fail-open mode for testing: `inference_epp_failure_mode_allow on`
+NGINX configurations are now **generated dynamically** using `generate-config.sh`, just like local and docker tests:
+- Starts from `tests/configs/nginx-base.conf` template
+- Applies scenario-specific configs from `tests/configs/*.conf`
+- Environment-specific settings (kind, local, docker) are automatically applied
+- Each test scenario creates its own ConfigMap for later inspection
 
-You can modify the configuration by editing:
+**Dynamic Configuration Benefits**:
+- Consistent with local/docker test workflows
+- Easier to maintain (single source of truth)
+- Automatic handling of endpoints, TLS, resolver settings
+- Each test scenario preserves its ConfigMap for debugging
+
+**View Generated Configs**:
 ```bash
-kubectl edit configmap nginx-inference-config -n ngx-inference-test
+# List all scenario-specific ConfigMaps
+kubectl get configmap -n ngx-inference-test | grep nginx-inference
+
+# View a specific scenario's config
+kubectl get configmap nginx-inference-bbr_on_epp_on -n ngx-inference-test -o yaml
+
+# View the currently active config
+kubectl exec -n ngx-inference-test -l app=nginx-inference -- cat /etc/nginx/nginx.conf
 ```
 
-Then restart NGINX:
+**Manually Generate a Config**:
 ```bash
-kubectl rollout restart deployment nginx-inference -n ngx-inference-test
+# Generate a specific scenario config
+./tests/generate-config.sh -e kind -o /tmp/my-config.conf -s bbr_off_epp_on -n ngx-inference-test
+
+# View the generated config
+cat /tmp/my-config.conf
+```
+
+**Apply a New Configuration**:
+The test script handles this automatically, but if doing manually:
+```bash
+# Generate config
+./tests/generate-config.sh -e kind -o /tmp/nginx-test.conf -s bbr_on_epp_off -n ngx-inference-test
+
+# Create/update ConfigMap
+kubectl create configmap nginx-inference-bbr_on_epp_off \
+  --from-file=nginx.conf=/tmp/nginx-test.conf \
+  -n ngx-inference-test \
+  --dry-run=client -o yaml | kubectl apply -f -
+
+# Update deployment to use new ConfigMap
+kubectl patch deployment nginx-inference -n ngx-inference-test --type=json \
+  -p='[{"op": "replace", "path": "/spec/template/spec/volumes/0/configMap/name", "value": "nginx-inference-bbr_on_epp_off"}]'
 ```
 
 ### vLLM Simulator Configuration

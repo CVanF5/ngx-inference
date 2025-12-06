@@ -68,18 +68,20 @@ start-local: setup-local build
 	@echo "Starting mock external processor..."
 	@-kill $$(cat /tmp/extproc_mock.pid 2>/dev/null) 2>/dev/null || true
 	@rm -f /tmp/extproc_mock.pid
-	@(EPP_UPSTREAM=localhost:8080 MOCK_ROLE=EPP ./target/debug/extproc_mock 0.0.0.0:9001 >/dev/null 2>&1 & echo $$! > /tmp/extproc_mock.pid) || true
+	@(EPP_UPSTREAM=127.0.0.1:8000 MOCK_ROLE=EPP ./target/debug/extproc_mock 0.0.0.0:9001 >/dev/null 2>&1 & echo $$! > /tmp/extproc_mock.pid) || true
 	@sleep 1
 	@echo "Starting echo server..."
 	@-kill $$(cat /tmp/echo-server.pid 2>/dev/null) 2>/dev/null || true
 	@rm -f /tmp/echo-server.pid
 	@cd docker/echo-server && [ ! -f package.json ] && npm init -y >/dev/null 2>&1 || true
 	@cd docker/echo-server && [ ! -d node_modules ] && npm install express >/dev/null 2>&1 || true
-	@(cd docker/echo-server && PORT=8080 node custom-echo-server.js >/dev/null 2>&1 & echo $$! > /tmp/echo-server.pid) || true
+	@(cd docker/echo-server && PORT=8000 node custom-echo-server.js >/dev/null 2>&1 & echo $$! > /tmp/echo-server.pid) || true
 	@sleep 1
 	@echo "✅ Local services started. Run 'make test-local' to run tests."
 
 start-docker: setup-docker
+	@echo "==> Generating nginx configuration for Docker..."
+	./tests/generate-config.sh -e docker -o /tmp/nginx-docker.conf -s bbr_on_epp_on
 	@echo "==> Starting Docker services..."
 	docker compose -f $(DOCKER_COMPOSE_MAIN) up --build -d
 	@echo "✅ Docker services started. Run 'make test-docker' to run tests."
@@ -93,19 +95,19 @@ start-kind: setup-kind
 # TEST TARGETS - Run automated tests
 # ============================================================================
 
-test-local:
+test-local: start-local
 	@echo "==> Running local tests..."
 	@echo "Building module for NGINX version: $$(nginx -v 2>&1 | sed 's|nginx version: nginx/||')"
 	./tests/test-config.sh
 	@echo "✅ Local tests complete."
 
-test-docker:
+test-docker: start-docker
 	@echo "==> Running Docker tests..."
 	@echo "Building module for NGINX version: $$(grep 'FROM nginx:' docker/nginx/Dockerfile | head -1 | sed 's/.*nginx://' | sed 's/-.*//')"
 	DOCKER_ENVIRONMENT=main ./tests/test-config.sh
 	@echo "✅ Docker tests complete."
 
-test-kind:
+test-kind: start-kind
 	@echo "==> Running tests against reference EPP in kind cluster..."
 	./tests/kind-ngf/scripts/test-kind.sh
 	@echo "✅ Kind tests complete."
@@ -137,7 +139,7 @@ clean: stop
 	@# Clean build artifacts
 	cargo clean
 	@# Clean temp files
-	rm -f /tmp/nginx-ngx-inference-*.log /tmp/nginx-ngx-inference-test.conf
+	rm -f /tmp/nginx-ngx-inference-*.log /tmp/nginx-ngx-inference-*.conf
 	@# Remove nginx temp directories
 	rm -rf /tmp/nginx_client_body_temp /tmp/nginx_proxy_temp /tmp/nginx_fastcgi_temp /tmp/nginx_scgi_temp /tmp/nginx_uwsgi_temp
 	@# Clean echo server node_modules

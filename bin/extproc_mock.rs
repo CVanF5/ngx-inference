@@ -216,6 +216,34 @@ impl ExternalProcessor for ExtProcMock {
     }
 }
 
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c()
+            .await
+            .expect("failed to install Ctrl+C handler");
+    };
+
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("failed to install signal handler")
+            .recv()
+            .await;
+    };
+
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+
+    tokio::select! {
+        _ = ctrl_c => {
+            eprintln!("extproc_mock: received SIGINT, shutting down gracefully...");
+        },
+        _ = terminate => {
+            eprintln!("extproc_mock: received SIGTERM, shutting down gracefully...");
+        },
+    }
+}
+
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let addr: SocketAddr = std::env::args()
@@ -246,9 +274,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     println!("extproc_mock listening on {}", addr);
+
     tonic::transport::Server::builder()
         .add_service(ExternalProcessorServer::new(svc))
-        .serve(addr)
+        .serve_with_shutdown(addr, shutdown_signal())
         .await?;
+
+    eprintln!("extproc_mock: shutdown complete");
     Ok(())
 }

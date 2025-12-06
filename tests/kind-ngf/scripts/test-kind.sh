@@ -67,13 +67,25 @@ test_nodeport_connectivity() {
     return 1
 }
 
-# Display recent NGINX logs
+# Display logs for NGINX and vLLM pods
 display_logs() {
+    local message=$1
     local nginx_pod=$(kubectl get pods -n "$NAMESPACE" -l app=nginx-inference -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+    local vllm_pod=$(kubectl get pods -n "$NAMESPACE" -l app=vllm-llama3-8b-instruct -o jsonpath='{.items[0].metadata.name}' 2>/dev/null)
+
+    echo ""
+    echo -e "${BLUE}=== $message ===${NC}"
+
     if [ -n "$nginx_pod" ]; then
-        echo -e "${BLUE}  NGINX logs:${NC}"
-        kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=15 | sed 's/^/    /' || true
+        echo -e "${BLUE}NGINX Logs:${NC}"
+        kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=15 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
     fi
+
+    if [ -n "$vllm_pod" ]; then
+        echo -e "${BLUE}vLLM Logs:${NC}"
+        kubectl logs -n "$NAMESPACE" "$vllm_pod" --tail=10 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
+    fi
+    echo ""
 }
 
 # Apply configuration for a test scenario
@@ -89,21 +101,27 @@ apply_test_config() {
         -s "$scenario" \
         -n "$NAMESPACE"
 
-    # Create ConfigMap
-    kubectl create configmap nginx-inference-config \
+    # Create unique ConfigMap for this test scenario (replace underscores with hyphens)
+    local configmap_name="nginx-inference-${scenario//_/-}"
+    echo -e "${BLUE}  Creating ConfigMap: $configmap_name${NC}"
+    kubectl create configmap "$configmap_name" \
         --from-file=nginx.conf="$tmp_config" \
         -n "$NAMESPACE" \
         --dry-run=client -o yaml | kubectl apply -f -
 
-    # Restart NGINX to pick up new config
-    kubectl rollout restart deployment nginx-inference -n "$NAMESPACE" >/dev/null
+    # Update deployment to use the new ConfigMap
+    echo -e "${BLUE}  Updating deployment to use $configmap_name${NC}"
+    kubectl patch deployment nginx-inference -n "$NAMESPACE" --type=json \
+        -p='[{"op": "replace", "path": "/spec/template/spec/volumes/0/configMap/name", "value": "'$configmap_name'"}]'
+
+    # Wait for rollout to complete
     kubectl rollout status deployment nginx-inference -n "$NAMESPACE" --timeout=60s >/dev/null
 
     # Give NGINX a moment to fully start
     sleep 2
 
     rm -f "$tmp_config"
-    echo -e "${GREEN} Configuration applied${NC}"
+    echo -e "${GREEN} Configuration applied (ConfigMap: $configmap_name)${NC}"
 }
 
 # Run test using the existing test-config.sh with special environment
@@ -165,6 +183,9 @@ run_test_for_scenario() {
             expected_epp="enabled"
             ;;
     esac
+
+    # Display logs before tests
+    display_logs "Logs Before Test: $test_name"
 
     # Run simple tests
     local failed=0
@@ -267,12 +288,17 @@ run_test_for_scenario() {
             echo -e "${YELLOW}   vLLM chat/completions: HTTP $vllm_http_code${NC}"
             echo -e "${YELLOW}  Response body: $(echo "$vllm_body" | head -c 100)...${NC}"
         fi
+
+        # Show EPP logs for the vLLM request
+        if [ -n "$nginx_pod" ]; then
+            echo -e "${BLUE}  NGINX logs after vLLM request (EPP activity):${NC}"
+            local recent_logs=$(kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=15 2>/dev/null)
+            echo "$recent_logs" | grep -E "(EPP gRPC|Selected upstream|DEBUG: Found header.*with value)" | sed 's/^/    /' || echo "    (No EPP logs found)"
+        fi
     fi
 
-    # Show logs after test
-    display_logs
-
-    echo ""
+    # Display logs after tests
+    display_logs "Logs After Test: $test_name"
 
     if [ $failed -eq 0 ]; then
         echo -e "${GREEN} Test passed: $test_name${NC}"

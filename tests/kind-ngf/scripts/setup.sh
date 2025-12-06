@@ -260,6 +260,24 @@ deploy_vllm_and_epp() {
 deploy_nginx() {
     echo -e "${YELLOW}Deploying NGINX with ngx-inference module...${NC}"
 
+    # Generate initial nginx config using generate-config.sh with bbr_on_epp_on scenario
+    echo -e "${YELLOW}Generating initial nginx configuration...${NC}"
+    local tmp_config="/tmp/nginx-kind-initial.conf"
+    "$PROJECT_ROOT/tests/generate-config.sh" \
+        -e kind \
+        -o "$tmp_config" \
+        -s "bbr_on_epp_on" \
+        -n "$NAMESPACE"
+
+    # Create initial ConfigMap (replace underscores with hyphens for k8s naming)
+    echo -e "${YELLOW}Creating initial ConfigMap...${NC}"
+    kubectl create configmap nginx-inference-bbr-on-epp-on \
+        --from-file=nginx.conf="$tmp_config" \
+        -n "$NAMESPACE"
+    rm -f "$tmp_config"
+
+    # Deploy Service and Deployment from manifest
+    echo -e "${YELLOW}Deploying NGINX Service and Deployment...${NC}"
     kubectl apply -f "$TEST_DIR/manifests/04-nginx-inference.yaml"
 
     # Give Kubernetes time to schedule pods

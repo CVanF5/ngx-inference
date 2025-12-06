@@ -90,7 +90,7 @@ if [[ "$ENVIRONMENT" != "local" && "$ENVIRONMENT" != "docker" && "$ENVIRONMENT" 
     exit 1
 fi
 
-# Set module path and endpoints based on environment
+# Set module path, endpoints, and ports based on environment
 if [[ "$ENVIRONMENT" == "local" ]]; then
     if [[ "$(uname)" == "Darwin" ]]; then
         MODULE_PATH="$PROJECT_ROOT/target/debug/libngx_inference.dylib"
@@ -99,10 +99,11 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
         MODULE_PATH="$PROJECT_ROOT/target/debug/libngx_inference.so"
         MIMETYPES_PATH="/etc/nginx/mime.types"
     fi
-    UPSTREAM_HOST="localhost:8080"
-    EPP_HOST="localhost:9001"
+    UPSTREAM_HOST="127.0.0.1:8000"
+    EPP_HOST="127.0.0.1:9001"
     ERROR_LOG="/tmp/nginx-ngx-inference-error.log"
     ACCESS_LOG="/tmp/nginx-ngx-inference-access.log"
+    NGINX_PORT="8080"
 elif [[ "$ENVIRONMENT" == "kind" ]]; then
     MODULE_PATH="/usr/lib/nginx/modules/libngx_inference.so"
     MIMETYPES_PATH="/etc/nginx/mime.types"
@@ -114,13 +115,16 @@ elif [[ "$ENVIRONMENT" == "kind" ]]; then
     # In Kubernetes, log to stdout/stderr for kubectl logs to work
     ERROR_LOG="/dev/stderr"
     ACCESS_LOG="/dev/stdout"
+    NGINX_PORT="8082"
 elif [[ "$ENVIRONMENT" == "docker" ]]; then
     MODULE_PATH="/usr/lib/nginx/modules/libngx_inference.so"
     MIMETYPES_PATH="/etc/nginx/mime.types"
     UPSTREAM_HOST="echo-server:80"
     EPP_HOST="mock-epp:9001"
-    ERROR_LOG="/tmp/nginx-ngx-inference-error.log"
-    ACCESS_LOG="/tmp/nginx-ngx-inference-access.log"
+    # In Docker, log to stdout/stderr for docker logs to work
+    ERROR_LOG="/dev/stderr"
+    ACCESS_LOG="/dev/stdout"
+    NGINX_PORT="8081"
 else
     # Default/fallback configuration
     MODULE_PATH="/usr/lib/nginx/modules/libngx_inference.so"
@@ -158,13 +162,17 @@ if [[ -n "$SERVER_CONFIG" ]]; then
     if [[ "$ENVIRONMENT" == "kind" ]]; then
         # In Kubernetes, use the kube-dns service IP
         RESOLVER="10.96.0.10"
+    elif [[ "$ENVIRONMENT" == "docker" ]]; then
+        # In Docker, use Docker's internal DNS server
+        RESOLVER="127.0.0.11"
     else
-        # For local/docker, use system resolver, filtering out invalid IPv6 addresses
+        # For local, use system resolver, filtering out invalid IPv6 addresses
         RESOLVER=$(grep '^nameserver' /etc/resolv.conf | grep -v '^nameserver fe80::' | awk '{print $2}' | head -1 || echo "8.8.8.8")
     fi
 
-    # Read server config and replace references with environment-specific hosts
+    # Read server config and replace references with environment-specific hosts and port
     SERVER_CONFIG_CONTENT=$(cat "$SERVER_CONFIG_FILE" | \
+        sed "s|listen 8081;|listen $NGINX_PORT;|g" | \
         sed "s|http://localhost:8080|http://$UPSTREAM_HOST|g" | \
         sed "s|\"localhost:8080\"|\"$UPSTREAM_HOST\"|g" | \
         sed "s|\"127.0.0.1:8080\"|\"$UPSTREAM_HOST\"|g" | \

@@ -10,7 +10,7 @@ FROM rust:1.91-alpine3.22 AS builder
 WORKDIR /work
 
 # Install build dependencies for Alpine (NGINX requirements)
-RUN apk add --no-cache \
+RUN apk add \
     clang-dev \
     pcre2-dev \
     openssl-dev \
