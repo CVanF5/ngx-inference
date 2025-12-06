@@ -7,7 +7,8 @@ use std::ffi::{c_char, c_void};
 
 // Helper macro for info-level logging in BBR
 macro_rules! ngx_log_info_http {
-    ($request:expr, $($arg:tt)*) => {
+    ($request:expr, $($arg:tt)*) => {{
+        #[allow(unused_unsafe)]
         unsafe {
             let msg = format!($($arg)*);
             let c_msg = std::ffi::CString::new(msg).unwrap();
@@ -18,7 +19,7 @@ macro_rules! ngx_log_info_http {
                 c_msg.as_ptr(),
             );
         }
-    };
+    }};
 }
 
 // Platform-conditional string pointer casting for nginx FFI
@@ -280,21 +281,23 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
 
     // Body processing complete - resume phases from where we left off
     // We must call ngx_http_core_run_phases to continue through content/proxy phase
-    if (*r).write_event_handler == Some(ngx::ffi::ngx_http_core_run_phases) {
-        let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
-        ngx_log_debug_http!(
-            request,
-            "ngx-inference: BBR callback complete, resuming phases (async mode)"
-        );
+    unsafe {
+        if (*r).write_event_handler == Some(ngx::ffi::ngx_http_core_run_phases) {
+            let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
+            ngx_log_debug_http!(
+                request,
+                "ngx-inference: BBR callback complete, resuming phases (async mode)"
+            );
 
-        // Resume phases - this will continue through content phase (proxy) and eventually log phase
-        ngx::ffi::ngx_http_core_run_phases(r);
-    } else {
-        let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
-        ngx_log_info_http!(
-            request,
-            "ngx-inference: BBR callback complete (sync mode, no resume needed)"
-        );
+            // Resume phases - this will continue through content phase (proxy) and eventually log phase
+            ngx::ffi::ngx_http_core_run_phases(r);
+        } else {
+            let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
+            ngx_log_info_http!(
+                request,
+                "ngx-inference: BBR callback complete (sync mode, no resume needed)"
+            );
+        }
     }
 }
 

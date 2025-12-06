@@ -205,9 +205,6 @@ run_test_for_scenario() {
     # Note: BBR functionality is validated through the /v1/chat/completions endpoint tests below
     # The BBR module extracts model names from request bodies regardless of the specific endpoint
 
-    # Show logs before test
-    display_logs
-
     # Test EPP if enabled, or test expected failure if disabled
     if [ "$expected_epp" = "enabled" ]; then
         echo "  Testing EPP endpoint (/v1/chat/completions)..."

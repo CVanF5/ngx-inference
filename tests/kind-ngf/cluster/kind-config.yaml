@@ -5,25 +5,8 @@ apiVersion: kind.x-k8s.io/v1alpha4
 name: ngx-inference-test
 nodes:
   - role: control-plane
-    kubeadmConfigPatches:
-    - |
-      kind: InitConfiguration
-      nodeRegistration:
-        taints: []
     extraPortMappings:
       # Map host port 30080 to NodePort 30080 for direct NodePort access
       - containerPort: 30080
         hostPort: 30080
         protocol: TCP
-  - role: control-plane
-    kubeadmConfigPatches:
-    - |
-      kind: JoinConfiguration
-      nodeRegistration:
-        taints: []
-  - role: control-plane
-    kubeadmConfigPatches:
-    - |
-      kind: JoinConfiguration
-      nodeRegistration:
-        taints: []

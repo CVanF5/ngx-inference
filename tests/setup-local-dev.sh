@@ -88,40 +88,36 @@ is_rhel_family() {
 
 detect_os
 
-# Common tools check
-echo -e "${YELLOW}Checking common tools...${NC}"
 tools_missing=0
-
-# Check curl
-if command -v curl >/dev/null 2>&1; then
-    echo -e "${GREEN} curl found: $(curl --version | head -n1)${NC}"
-else
-    echo -e "${RED} curl not found - please install curl${NC}"
-    if [[ "$OS" == "macos" ]]; then
-        echo "  brew install curl"
-    elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
-        echo "  sudo apt-get install curl"
-    fi
-    tools_missing=1
-fi
-
-# Check jq
-if command -v jq >/dev/null 2>&1; then
-    echo -e "${GREEN} jq found: $(jq --version)${NC}"
-else
-    echo -e "${RED} jq not found - please install jq for JSON parsing${NC}"
-    if [[ "$OS" == "macos" ]]; then
-        echo "  brew install jq"
-    elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
-        echo "  sudo apt-get install jq"
-    fi
-    tools_missing=1
-fi
-
-echo ""
 
 if [[ "$ENVIRONMENT" == "local" ]]; then
     echo -e "${YELLOW}Checking local development requirements...${NC}"
+
+    # Check curl
+    if command -v curl >/dev/null 2>&1; then
+        echo -e "${GREEN} curl found${NC}"
+    else
+        echo -e "${RED} curl not found - please install curl${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  brew install curl"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install curl"
+        fi
+        tools_missing=1
+    fi
+
+    # Check jq
+    if command -v jq >/dev/null 2>&1; then
+        echo -e "${GREEN} jq found${NC}"
+    else
+        echo -e "${RED} jq not found - please install jq for JSON parsing${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  brew install jq"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install jq"
+        fi
+        tools_missing=1
+    fi
 
     # Check nginx
     if command -v nginx >/dev/null 2>&1; then
@@ -309,6 +305,32 @@ if [[ "$ENVIRONMENT" == "local" ]]; then
 elif [[ "$ENVIRONMENT" == "docker" ]]; then
     echo -e "${YELLOW}Checking Docker development requirements...${NC}"
 
+    # Check curl
+    if command -v curl >/dev/null 2>&1; then
+        echo -e "${GREEN} curl found${NC}"
+    else
+        echo -e "${RED} curl not found - please install curl${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  brew install curl"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install curl"
+        fi
+        tools_missing=1
+    fi
+
+    # Check jq
+    if command -v jq >/dev/null 2>&1; then
+        echo -e "${GREEN} jq found${NC}"
+    else
+        echo -e "${RED} jq not found - please install jq for JSON parsing${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  brew install jq"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install jq"
+        fi
+        tools_missing=1
+    fi
+
     # Check docker
     if command -v docker >/dev/null 2>&1; then
         echo -e "${GREEN} docker found: $(docker --version)${NC}"
@@ -335,6 +357,32 @@ elif [[ "$ENVIRONMENT" == "docker" ]]; then
 
 elif [[ "$ENVIRONMENT" == "kind" ]]; then
     echo -e "${YELLOW}Checking KIND development requirements...${NC}"
+
+    # Check curl
+    if command -v curl >/dev/null 2>&1; then
+        echo -e "${GREEN} curl found${NC}"
+    else
+        echo -e "${RED} curl not found - please install curl${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  brew install curl"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install curl"
+        fi
+        tools_missing=1
+    fi
+
+    # Check jq
+    if command -v jq >/dev/null 2>&1; then
+        echo -e "${GREEN} jq found${NC}"
+    else
+        echo -e "${RED} jq not found - please install jq for JSON parsing${NC}"
+        if [[ "$OS" == "macos" ]]; then
+            echo "  brew install jq"
+        elif [[ "$OS" == "debian" || "$OS" == "ubuntu" ]]; then
+            echo "  sudo apt-get install jq"
+        fi
+        tools_missing=1
+    fi
 
     # Check kind
     if command -v kind >/dev/null 2>&1; then
