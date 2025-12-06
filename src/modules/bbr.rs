@@ -91,8 +91,6 @@ impl BbrProcessor {
     }
 
     fn start_body_reading(request: &mut http::Request, _conf: &ModuleConfig) -> core::Status {
-        // Start reading the request body without pre-validation
-        // We'll validate the actual body size during reading
         ngx_log_debug_http!(request, "ngx-inference: BBR starting body reading");
 
         let rc = unsafe {
@@ -111,9 +109,36 @@ impl BbrProcessor {
         };
 
         match status {
-            core::Status::NGX_OK => core::Status::NGX_DONE, // Body reading complete, handler called
-            core::Status::NGX_AGAIN => core::Status::NGX_DONE, // Body reading in progress, handler will be called
-            _ => core::Status::NGX_ERROR,                      // Always fail on error
+            core::Status::NGX_OK => {
+                // Body was read synchronously, callback already executed
+                // MUST still call ngx_http_finalize_request for reference counting
+                // even in sync case, per nginx dev guidance
+                unsafe {
+                    let r_ptr: *mut ngx::ffi::ngx_http_request_t = request.as_mut();
+                    ngx::ffi::ngx_http_finalize_request(
+                        r_ptr,
+                        ngx::ffi::NGX_DONE as ngx::ffi::ngx_int_t,
+                    );
+                }
+                core::Status::NGX_DONE
+            }
+            core::Status::NGX_AGAIN => {
+                // Body reading is async - MUST call ngx_http_finalize_request for reference counting
+                // Per nginx dev guidance: https://mailman.nginx.org/pipermail/nginx/2023-September/V34S4BNWHPJFUY7RUVBDLHRQ7WGHX3R5.html
+                unsafe {
+                    let r_ptr: *mut ngx::ffi::ngx_http_request_t = request.as_mut();
+                    (*r_ptr).write_event_handler = Some(ngx::ffi::ngx_http_core_run_phases);
+
+                    // Call finalize with NGX_DONE to account for reference counting
+                    // The callback will resume phases when body reading completes
+                    ngx::ffi::ngx_http_finalize_request(
+                        r_ptr,
+                        ngx::ffi::NGX_DONE as ngx::ffi::ngx_int_t,
+                    );
+                }
+                core::Status::NGX_DONE
+            }
+            _ => core::Status::NGX_ERROR,
         }
     }
 }
@@ -126,6 +151,7 @@ impl BbrProcessor {
 /// - Modifies nginx internal request structures
 /// - Assumes the nginx request pointer is valid and not null
 #[allow(clippy::manual_c_str_literals)] // FFI code uses byte strings for cross-platform compatibility
+#[allow(unpredictable_function_pointer_comparisons)] // We check write_event_handler for async detection
 pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_request_t) {
     // Validate input pointer
     if r.is_null() {
@@ -150,7 +176,7 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
     let conf = match Module::location_conf(request) {
         Some(c) => c,
         None => {
-            // No config found, resume processing
+            // No config found - event loop will resume if needed
             return;
         }
     };
@@ -162,7 +188,7 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
         conf.bbr_header_name.clone()
     };
 
-    // If header already present, skip BBR and resume.
+    // If header already present, skip BBR - event loop will resume if needed
     if get_header_in(request, &header_name).is_some() {
         return;
     }
@@ -208,7 +234,7 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
 
     // Extract model directly from JSON body
     if body.is_empty() {
-        // Empty body - skip model extraction and continue processing
+        // Empty body - skip model extraction, event loop will resume if needed
         return;
     }
 
@@ -252,9 +278,24 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
         );
     }
 
-    // Body processing complete - resume NGINX phase processing
-    // We must call ngx_http_core_run_phases(r) to continue after async body reading
-    unsafe { ngx::ffi::ngx_http_core_run_phases(r) };
+    // Body processing complete - resume phases from where we left off
+    // We must call ngx_http_core_run_phases to continue through content/proxy phase
+    if (*r).write_event_handler == Some(ngx::ffi::ngx_http_core_run_phases) {
+        let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
+        ngx_log_debug_http!(
+            request,
+            "ngx-inference: BBR callback complete, resuming phases (async mode)"
+        );
+
+        // Resume phases - this will continue through content phase (proxy) and eventually log phase
+        ngx::ffi::ngx_http_core_run_phases(r);
+    } else {
+        let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
+        ngx_log_info_http!(
+            request,
+            "ngx-inference: BBR callback complete (sync mode, no resume needed)"
+        );
+    }
 }
 
 /// Read the request body from memory and file buffers
