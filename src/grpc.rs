@@ -10,22 +10,36 @@ use ngx::{http, ngx_log_debug_http};
 
 use std::sync::OnceLock;
 
-use tonic::transport::Channel;
+use tonic::transport::{Channel, Uri};
+
+// Helper function to extract domain/host from URI for TLS verification
+// Handles IPv6, schemes, and various endpoint formats correctly
+fn extract_domain_from_uri(uri: &str) -> Result<String, String> {
+    uri.parse::<Uri>()
+        .map_err(|e| format!("Invalid URI: {}", e))?
+        .authority()
+        .ok_or_else(|| format!("Missing authority in URI: {}", uri))
+        .map(|auth| auth.host().to_string())
+}
 
 // Helper macro for error-level logging in gRPC operations
 macro_rules! ngx_log_error_http {
-    ($request:expr, $($arg:tt)*) => {
+    ($request:expr, $($arg:tt)*) => {{
+        #[allow(unused_unsafe)]
         unsafe {
-            let msg = format!($($arg)*);
-            let c_msg = std::ffi::CString::new(msg).unwrap();
-            ngx::ffi::ngx_log_error_core(
-                ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
-                ($request.connection().as_ref().unwrap().log),
-                0,
-                c_msg.as_ptr(),
-            );
+            if let Some(conn) = $request.connection().as_ref() {
+                let msg = format!($($arg)*);
+                if let Ok(c_msg) = std::ffi::CString::new(msg) {
+                    ngx::ffi::ngx_log_error_core(
+                        ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
+                        conn.log,
+                        0,
+                        c_msg.as_ptr(),
+                    );
+                }
+            }
         }
-    };
+    }};
 }
 
 /// Extract detailed error information from transport errors
@@ -431,12 +445,8 @@ pub fn epp_headers_blocking(
                 // SECURE MODE: Configure TLS with custom CA if provided, otherwise use system roots
                 use tonic::transport::ClientTlsConfig;
 
-                // Extract domain from endpoint for TLS verification
-                let domain = if let Some(colon_pos) = endpoint_copy.rfind(':') {
-                    endpoint_copy[..colon_pos].to_string()
-                } else {
-                    endpoint_copy.clone()
-                };
+                // Extract domain from URI for TLS verification (handles IPv6, schemes, etc.)
+                let domain = extract_domain_from_uri(&uri)?;
 
                 let mut tls_config = ClientTlsConfig::new().domain_name(&domain);
 
@@ -674,11 +684,10 @@ pub fn epp_headers_async<F>(
                 // SECURE MODE: Configure TLS with custom CA if provided, otherwise use system roots
                 use tonic::transport::ClientTlsConfig;
 
-                // Extract domain from endpoint for TLS verification
-                let domain = if let Some(colon_pos) = endpoint.rfind(':') {
-                    endpoint[..colon_pos].to_string()
-                } else {
-                    endpoint.to_string()
+                // Extract domain from URI for TLS verification (handles IPv6, schemes, etc.)
+                let domain = match extract_domain_from_uri(&uri) {
+                    Ok(d) => d,
+                    Err(e) => return Err(e),
                 };
 
                 // Logging not available in async context - would need to pass request context safely
@@ -869,12 +878,8 @@ pub async fn epp_headers_blocking_internal(
         // SECURE MODE: Configure TLS with custom CA if provided, otherwise use system roots
         use tonic::transport::ClientTlsConfig;
 
-        // Extract domain from endpoint for TLS verification
-        let domain = if let Some(colon_pos) = endpoint.rfind(':') {
-            endpoint[..colon_pos].to_string()
-        } else {
-            endpoint.to_string()
-        };
+        // Extract domain from URI for TLS verification (handles IPv6, schemes, etc.)
+        let domain = extract_domain_from_uri(&uri)?;
 
         let mut tls_config = ClientTlsConfig::new().domain_name(&domain);
 
