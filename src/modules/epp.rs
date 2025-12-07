@@ -230,7 +230,8 @@ impl EppProcessor {
                     return Err("EPP returned no upstream in fail-closed mode");
                 }
             }
-            Err(_err) => {
+            Err(err) => {
+                ngx_log_warn_http!(request, "ngx-inference: EPP gRPC error: {}", err);
                 return Err("epp grpc error");
             }
         }

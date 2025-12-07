@@ -4,6 +4,26 @@
 //! - Headers-only exchange for upstream endpoint selection
 //!
 //! The implementation follows the Gateway API Inference Extension specification.
+//!
+//! # Function Overview
+//!
+//! **Active Functions (Production):**
+//! - `epp_headers_blocking()` - Main production implementation with nginx request logging
+//!   - Used by EPP module for all production traffic
+//!   - Includes panic recovery and detailed error logging
+//!   - Uses `parse_response_for_header()` for request-aware logging
+//!
+//! **Helper Functions (Testing/Internal):**
+//! - `epp_headers_blocking_internal()` - Internal async function without nginx dependencies
+//!   - Used for testing gRPC logic independently
+//!   - No nginx logging (pure async)
+//!   - Uses `parse_response_for_header_async()` (no logging overhead)
+//!
+//! **Deprecated Functions (Reference Only):**
+//! - `epp_headers_async()` - UNSAFE async implementation (kept for documentation)
+//!   - Marked with `#[allow(dead_code)]` to suppress warnings
+//!   - Demonstrates why naive async doesn't work with nginx
+//!   - DO NOT USE - causes worker crashes
 
 use crate::protos::envoy;
 use ngx::{http, ngx_log_debug_http};
@@ -27,15 +47,20 @@ macro_rules! ngx_log_error_http {
     ($request:expr, $($arg:tt)*) => {{
         #[allow(unused_unsafe)]
         unsafe {
-            if let Some(conn) = $request.connection().as_ref() {
-                let msg = format!($($arg)*);
-                if let Ok(c_msg) = std::ffi::CString::new(msg) {
-                    ngx::ffi::ngx_log_error_core(
-                        ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
-                        conn.log,
-                        0,
-                        c_msg.as_ptr(),
-                    );
+            // Access raw request pointer for immutable connection access
+            let r_ptr = $request as *const ngx::http::Request as *const ngx::ffi::ngx_http_request_t;
+            if !r_ptr.is_null() {
+                let r_ref = &*r_ptr;
+                if let Some(conn) = r_ref.connection.as_ref() {
+                    let msg = format!($($arg)*);
+                    if let Ok(c_msg) = std::ffi::CString::new(msg) {
+                        ngx::ffi::ngx_log_error_core(
+                            ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
+                            conn.log,
+                            0,
+                            c_msg.as_ptr(),
+                        );
+                    }
                 }
             }
         }
@@ -650,6 +675,7 @@ pub fn epp_headers_blocking(
 ///
 /// This function remains in the codebase only for reference. It demonstrates
 /// why naive async approaches don't work with NGINX modules.
+#[allow(dead_code)]
 #[allow(clippy::too_many_arguments)]
 pub fn epp_headers_async<F>(
     request_ptr: *mut ngx::ffi::ngx_http_request_t,
