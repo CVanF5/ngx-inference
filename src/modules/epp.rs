@@ -3,36 +3,73 @@ use ngx::{core, http, ngx_log_debug_http};
 
 // Helper macro for info-level logging in EPP
 macro_rules! ngx_log_info_http {
-    ($request:expr, $($arg:tt)*) => {
+    ($request:expr, $($arg:tt)*) => {{
+        #[allow(unused_unsafe)]
         unsafe {
-            let msg = format!($($arg)*);
-            if let Ok(c_msg) = std::ffi::CString::new(msg) {
-                ngx::ffi::ngx_log_error_core(
-                    ngx::ffi::NGX_LOG_INFO as ngx::ffi::ngx_uint_t,
-                    ($request.connection().as_ref().unwrap().log),
-                    0,
-                    c_msg.as_ptr(),
-                );
+            let r = $request.as_mut();
+            if let Some(conn) = r.connection.as_ref() {
+                let msg = format!($($arg)*);
+                if let Ok(c_msg) = std::ffi::CString::new(msg) {
+                    ngx::ffi::ngx_log_error_core(
+                        ngx::ffi::NGX_LOG_INFO as ngx::ffi::ngx_uint_t,
+                        conn.log,
+                        0,
+                        c_msg.as_ptr(),
+                    );
+                }
             }
         }
-    };
+    }};
 }
 
 // Helper macro for warning-level logging in EPP
 macro_rules! ngx_log_warn_http {
-    ($request:expr, $($arg:tt)*) => {
+    ($request:expr, $($arg:tt)*) => {{
+        #[allow(unused_unsafe)]
         unsafe {
-            let msg = format!($($arg)*);
-            if let Ok(c_msg) = std::ffi::CString::new(msg) {
-                ngx::ffi::ngx_log_error_core(
-                    ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
-                    ($request.connection().as_ref().unwrap().log),
-                    0,
-                    c_msg.as_ptr(),
+            let r = $request.as_mut();
+            if let Some(conn) = r.connection.as_ref() {
+                let msg = format!($($arg)*);
+                if let Ok(c_msg) = std::ffi::CString::new(msg) {
+                    ngx::ffi::ngx_log_error_core(
+                        ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
+                        conn.log,
+                        0,
+                        c_msg.as_ptr(),
+                    );
+                }
+            }
+        }
+    }};
+}
+
+/// Helper function to set default upstream header
+fn set_default_upstream(
+    request: &mut http::Request,
+    conf: &ModuleConfig,
+    upstream_header: &str,
+    reason: &str,
+) {
+    if let Some(ref default_upstream) = conf.default_upstream {
+        if get_header_in(request, upstream_header).is_none() {
+            if request
+                .add_header_in(upstream_header, default_upstream)
+                .is_some()
+            {
+                ngx_log_warn_http!(
+                    request,
+                    "ngx-inference: Using default upstream '{}' due to {}",
+                    default_upstream,
+                    reason
+                );
+            } else {
+                ngx_log_warn_http!(
+                    request,
+                    "ngx-inference: Failed to set default upstream header"
                 );
             }
         }
-    };
+    }
 }
 
 /// EPP (Endpoint Picker Processor) processor
@@ -70,28 +107,12 @@ impl EppProcessor {
                 if conf.epp_failure_mode_allow {
                     ngx_log_debug_http!(request, "ngx-inference: EPP continuing in fail-open mode");
 
-                    // Set default upstream if configured
-                    if let Some(ref default_upstream) = conf.default_upstream {
-                        let upstream_header = if conf.epp_header_name.is_empty() {
-                            "X-Inference-Upstream".to_string()
-                        } else {
-                            conf.epp_header_name.clone()
-                        };
-
-                        // Only set if upstream header not already present
-                        if get_header_in(request, &upstream_header).is_none()
-                            && request
-                                .add_header_in(&upstream_header, default_upstream)
-                                .is_some()
-                        {
-                            // Log warning when using default upstream due to EPP failure
-                            ngx_log_warn_http!(
-                                request,
-                                "ngx-inference: Using default upstream '{}' due to EPP failure",
-                                default_upstream
-                            );
-                        }
-                    }
+                    let upstream_header = if conf.epp_header_name.is_empty() {
+                        "X-Inference-Upstream"
+                    } else {
+                        &conf.epp_header_name
+                    };
+                    set_default_upstream(request, conf, upstream_header, "EPP failure");
 
                     core::Status::NGX_DECLINED
                 } else {
@@ -116,7 +137,6 @@ impl EppProcessor {
         let endpoint = match &conf.epp_endpoint {
             Some(e) if !e.is_empty() => e.as_str(),
             _ => {
-                ngx_log_debug_http!(request, "ngx-inference: EPP endpoint not configured");
                 ngx_log_debug_http!(
                     request,
                     "ngx-inference: EPP endpoint not configured, skipping"
@@ -182,7 +202,7 @@ impl EppProcessor {
                         upstream_header_str
                     );
                 } else {
-                    ngx_log_debug_http!(
+                    ngx_log_warn_http!(
                         request,
                         "ngx-inference: EPP failed to set header '{}'",
                         upstream_header_str
@@ -196,21 +216,18 @@ impl EppProcessor {
                     "ngx-inference: EPP gRPC success: No upstream provided by EPP server"
                 );
 
-                // No upstream provided by EPP - check if we should use default
+                // No upstream provided by EPP
                 if conf.epp_failure_mode_allow {
-                    if let Some(ref default_upstream) = conf.default_upstream {
-                        if request
-                            .add_header_in(upstream_header_str, default_upstream)
-                            .is_some()
-                        {
-                            // Log warning when using default upstream due to EPP failure
-                            ngx_log_warn_http!(
-                                request,
-                                "ngx-inference: Using default upstream '{}' due to EPP failure",
-                                default_upstream
-                            );
-                        }
-                    }
+                    // Fail-open mode: try to use default upstream
+                    set_default_upstream(
+                        request,
+                        conf,
+                        upstream_header_str,
+                        "EPP returned no upstream",
+                    );
+                } else {
+                    // Fail-closed mode: EPP must provide an upstream, otherwise fail
+                    return Err("EPP returned no upstream in fail-closed mode");
                 }
             }
             Err(_err) => {

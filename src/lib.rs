@@ -21,18 +21,11 @@ use modules::bbr::get_header_in;
 use modules::config::{set_on_off, set_string_opt, set_u64, set_usize};
 use modules::{BbrProcessor, EppProcessor, ModuleConfig};
 
-// Platform-conditional string pointer casting for nginx FFI
-// macOS nginx FFI expects *const i8, Linux expects *const u8
-#[cfg(target_os = "macos")]
+// Platform-agnostic string pointer casting for nginx FFI
+// c_char can be either i8 or u8 depending on platform
 #[inline]
 fn cstr_ptr(s: *const u8) -> *const c_char {
-    s as *const i8
-}
-
-#[cfg(not(target_os = "macos"))]
-#[inline]
-fn cstr_ptr(s: *const u8) -> *const c_char {
-    s as *const c_char
+    s.cast::<c_char>()
 }
 
 // NGINX module for Gateway API inference extensions.
@@ -94,332 +87,290 @@ unsafe impl HttpModuleLocationConf for Module {
 
 // -------------------- Directives --------------------
 
-// inference_bbr on|off
-extern "C" fn ngx_http_inference_set_bbr_enable(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+// Macro to generate configuration directive handlers with reduced boilerplate
+macro_rules! ngx_conf_handler {
+    // Handler for on/off values
+    (on_off, $name:literal, $field:ident) => {
+        paste::paste! {
+            extern "C" fn [<ngx_http_inference_set_ $field>](
+                cf: *mut ngx_conf_t,
+                _cmd: *mut ngx_command_t,
+                conf: *mut c_void,
+            ) -> *mut c_char {
+                unsafe {
+                    if cf.is_null() || conf.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
+                    let cf_ref = &mut *cf;
+                    if cf_ref.args.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
 
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr` argument is not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
+                    let conf = &mut *(conf as *mut ModuleConfig);
+                    let args: &[ngx_str_t] = (*cf_ref.args).as_slice();
 
-        match set_on_off(val) {
-            Some(b) => conf.bbr_enable = b,
-            None => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr` expects on|off");
-                return core::NGX_CONF_ERROR;
-            }
-        }
-    }
-    core::NGX_CONF_OK
-}
+                    // Defensive check: ensure we have at least 2 args (directive name + value)
+                    if args.len() < 2 {
+                        ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` missing argument"));
+                        return core::NGX_CONF_ERROR;
+                    }
 
-// inference_bbr_max_body_size N (maximum body size in bytes for BBR processing, default 10MB)
-extern "C" fn ngx_http_inference_set_bbr_max_body_size(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+                    let val = match args[1].to_str() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` argument is not utf-8"));
+                            return core::NGX_CONF_ERROR;
+                        }
+                    };
 
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_max_body_size` not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        if set_usize(&mut conf.bbr_max_body_size, val).is_err() {
-            ngx_conf_log_error!(
-                NGX_LOG_EMERG,
-                cf,
-                "`inference_bbr_max_body_size` must be usize"
-            );
-            return core::NGX_CONF_ERROR;
-        }
-    }
-    core::NGX_CONF_OK
-}
-
-// inference_bbr_header_name NAME
-extern "C" fn ngx_http_inference_set_bbr_header_name(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
-
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_header_name` not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        conf.bbr_header_name = val.to_string();
-    }
-    core::NGX_CONF_OK
-}
-
-// inference_bbr_default_model MODEL_NAME
-extern "C" fn ngx_http_inference_set_bbr_default_model(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
-
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_bbr_default_model` not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
-        conf.bbr_default_model = val.to_string();
-    }
-    core::NGX_CONF_OK
-}
-
-// inference_default_upstream UPSTREAM
-extern "C" fn ngx_http_inference_set_default_upstream(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
-
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_default_upstream` not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        set_string_opt(&mut conf.default_upstream, val);
-    }
-    core::NGX_CONF_OK
-}
-
-// inference_epp on|off
-extern "C" fn ngx_http_inference_set_epp_enable(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
-
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp` argument is not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        match set_on_off(val) {
-            Some(b) => conf.epp_enable = b,
-            None => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp` expects on|off");
-                return core::NGX_CONF_ERROR;
+                    match set_on_off(val) {
+                        Some(b) => conf.$field = b,
+                        None => {
+                            ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` expects on|off"));
+                            return core::NGX_CONF_ERROR;
+                        }
+                    }
+                }
+                core::NGX_CONF_OK
             }
         }
-    }
-    core::NGX_CONF_OK
-}
+    };
 
-// inference_epp_endpoint host:port
-extern "C" fn ngx_http_inference_set_epp_endpoint(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+    // Handler for optional string values
+    (string_opt, $name:literal, $field:ident) => {
+        paste::paste! {
+            extern "C" fn [<ngx_http_inference_set_ $field>](
+                cf: *mut ngx_conf_t,
+                _cmd: *mut ngx_command_t,
+                conf: *mut c_void,
+            ) -> *mut c_char {
+                unsafe {
+                    if cf.is_null() || conf.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
+                    let cf_ref = &mut *cf;
+                    if cf_ref.args.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
 
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp_endpoint` not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
+                    let conf = &mut *(conf as *mut ModuleConfig);
+                    let args: &[ngx_str_t] = (*cf_ref.args).as_slice();
 
-        set_string_opt(&mut conf.epp_endpoint, val);
-    }
-    core::NGX_CONF_OK
-}
+                    // Defensive check: ensure we have at least 2 args (directive name + value)
+                    if args.len() < 2 {
+                        ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` missing argument"));
+                        return core::NGX_CONF_ERROR;
+                    }
 
-// inference_epp_timeout_ms N (gRPC timeout for EPP server communication, default 200ms)
-extern "C" fn ngx_http_inference_set_epp_timeout_ms(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+                    let val = match args[1].to_str() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` not utf-8"));
+                            return core::NGX_CONF_ERROR;
+                        }
+                    };
 
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp_timeout_ms` not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        if set_u64(&mut conf.epp_timeout_ms, val).is_err() {
-            ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp_timeout_ms` must be u64");
-            return core::NGX_CONF_ERROR;
-        }
-    }
-    core::NGX_CONF_OK
-}
-
-// inference_epp_failure_mode_allow on|off
-extern "C" fn ngx_http_inference_set_epp_failure_mode_allow(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
-
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(
-                    NGX_LOG_EMERG,
-                    cf,
-                    "`inference_epp_failure_mode_allow` not utf-8"
-                );
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        match set_on_off(val) {
-            Some(b) => conf.epp_failure_mode_allow = b,
-            None => {
-                ngx_conf_log_error!(
-                    NGX_LOG_EMERG,
-                    cf,
-                    "`inference_epp_failure_mode_allow` expects on|off"
-                );
-                return core::NGX_CONF_ERROR;
+                    set_string_opt(&mut conf.$field, val);
+                }
+                core::NGX_CONF_OK
             }
         }
-    }
-    core::NGX_CONF_OK
-}
+    };
 
-/* Set the EPP upstream header name (default "X-Inference-Upstream") */
-extern "C" fn ngx_http_inference_set_epp_header_name(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+    // Handler for required string values
+    (string, $name:literal, $field:ident) => {
+        paste::paste! {
+            extern "C" fn [<ngx_http_inference_set_ $field>](
+                cf: *mut ngx_conf_t,
+                _cmd: *mut ngx_command_t,
+                conf: *mut c_void,
+            ) -> *mut c_char {
+                unsafe {
+                    if cf.is_null() || conf.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
+                    let cf_ref = &mut *cf;
+                    if cf_ref.args.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
 
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp_header_name` not utf-8");
-                return core::NGX_CONF_ERROR;
-            }
-        };
+                    let conf = &mut *(conf as *mut ModuleConfig);
+                    let args: &[ngx_str_t] = (*cf_ref.args).as_slice();
 
-        conf.epp_header_name = val.to_string();
-    }
-    core::NGX_CONF_OK
-}
+                    // Defensive check: ensure we have at least 2 args (directive name + value)
+                    if args.len() < 2 {
+                        ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` missing argument"));
+                        return core::NGX_CONF_ERROR;
+                    }
 
-// inference_epp_tls on|off
-extern "C" fn ngx_http_inference_set_epp_tls(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+                    let val = match args[1].to_str() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` not utf-8"));
+                            return core::NGX_CONF_ERROR;
+                        }
+                    };
 
-        let val = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(
-                    NGX_LOG_EMERG,
-                    cf,
-                    "`inference_epp_tls` argument is not utf-8"
-                );
-                return core::NGX_CONF_ERROR;
-            }
-        };
-
-        match set_on_off(val) {
-            Some(b) => conf.epp_tls = b,
-            None => {
-                ngx_conf_log_error!(NGX_LOG_EMERG, cf, "`inference_epp_tls` expects on|off");
-                return core::NGX_CONF_ERROR;
+                    conf.$field = val.to_string();
+                }
+                core::NGX_CONF_OK
             }
         }
-    }
-    core::NGX_CONF_OK
-}
+    };
 
-// inference_epp_ca_file /path/to/ca.crt
-extern "C" fn ngx_http_inference_set_epp_ca_file(
-    cf: *mut ngx_conf_t,
-    _cmd: *mut ngx_command_t,
-    conf: *mut c_void,
-) -> *mut c_char {
-    unsafe {
-        let conf = &mut *(conf as *mut ModuleConfig);
-        let args: &[ngx_str_t] = (*(*cf).args).as_slice();
+    // Handler for usize values
+    (usize, $name:literal, $field:ident) => {
+        paste::paste! {
+            extern "C" fn [<ngx_http_inference_set_ $field>](
+                cf: *mut ngx_conf_t,
+                _cmd: *mut ngx_command_t,
+                conf: *mut c_void,
+            ) -> *mut c_char {
+                unsafe {
+                    if cf.is_null() || conf.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
+                    let cf_ref = &mut *cf;
+                    if cf_ref.args.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
 
-        let path = match args[1].to_str() {
-            Ok(s) => s,
-            Err(_) => {
-                ngx_conf_log_error!(
-                    NGX_LOG_EMERG,
-                    cf,
-                    "`inference_epp_ca_file` argument is not utf-8"
-                );
-                return core::NGX_CONF_ERROR;
+                    let conf = &mut *(conf as *mut ModuleConfig);
+                    let args: &[ngx_str_t] = (*cf_ref.args).as_slice();
+
+                    // Defensive check: ensure we have at least 2 args (directive name + value)
+                    if args.len() < 2 {
+                        ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` missing argument"));
+                        return core::NGX_CONF_ERROR;
+                    }
+
+                    let val = match args[1].to_str() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` not utf-8"));
+                            return core::NGX_CONF_ERROR;
+                        }
+                    };
+
+                    if set_usize(&mut conf.$field, val).is_err() {
+                        ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` must be usize"));
+                        return core::NGX_CONF_ERROR;
+                    }
+                }
+                core::NGX_CONF_OK
             }
-        };
+        }
+    };
 
-        conf.epp_ca_file = Some(path.to_string());
-    }
-    core::NGX_CONF_OK
+    // Handler for u64 values
+    (u64, $name:literal, $field:ident) => {
+        paste::paste! {
+            extern "C" fn [<ngx_http_inference_set_ $field>](
+                cf: *mut ngx_conf_t,
+                _cmd: *mut ngx_command_t,
+                conf: *mut c_void,
+            ) -> *mut c_char {
+                unsafe {
+                    if cf.is_null() || conf.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
+                    let cf_ref = &mut *cf;
+                    if cf_ref.args.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
+
+                    let conf = &mut *(conf as *mut ModuleConfig);
+                    let args: &[ngx_str_t] = (*cf_ref.args).as_slice();
+
+                    // Defensive check: ensure we have at least 2 args (directive name + value)
+                    if args.len() < 2 {
+                        ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` missing argument"));
+                        return core::NGX_CONF_ERROR;
+                    }
+
+                    let val = match args[1].to_str() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` not utf-8"));
+                            return core::NGX_CONF_ERROR;
+                        }
+                    };
+
+                    if set_u64(&mut conf.$field, val).is_err() {
+                        ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` must be u64"));
+                        return core::NGX_CONF_ERROR;
+                    }
+                }
+                core::NGX_CONF_OK
+            }
+        }
+    };
+
+    // Handler for Option<String> path values
+    (path, $name:literal, $field:ident) => {
+        paste::paste! {
+            extern "C" fn [<ngx_http_inference_set_ $field>](
+                cf: *mut ngx_conf_t,
+                _cmd: *mut ngx_command_t,
+                conf: *mut c_void,
+            ) -> *mut c_char {
+                unsafe {
+                    if cf.is_null() || conf.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
+                    let cf_ref = &mut *cf;
+                    if cf_ref.args.is_null() {
+                        return core::NGX_CONF_ERROR;
+                    }
+
+                    let conf = &mut *(conf as *mut ModuleConfig);
+                    let args: &[ngx_str_t] = (*cf_ref.args).as_slice();
+
+                    // Defensive check: ensure we have at least 2 args (directive name + value)
+                    if args.len() < 2 {
+                        ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` missing argument"));
+                        return core::NGX_CONF_ERROR;
+                    }
+
+                    let path = match args[1].to_str() {
+                        Ok(s) => s,
+                        Err(_) => {
+                            ngx_conf_log_error!(NGX_LOG_EMERG, cf, concat!("`", $name, "` argument is not utf-8"));
+                            return core::NGX_CONF_ERROR;
+                        }
+                    };
+
+                    conf.$field = Some(path.to_string());
+                }
+                core::NGX_CONF_OK
+            }
+        }
+    };
 }
+
+// Generate all configuration handlers using the macro
+ngx_conf_handler!(on_off, "inference_bbr", bbr_enable);
+ngx_conf_handler!(usize, "inference_bbr_max_body_size", bbr_max_body_size);
+ngx_conf_handler!(string, "inference_bbr_header_name", bbr_header_name);
+ngx_conf_handler!(string, "inference_bbr_default_model", bbr_default_model);
+ngx_conf_handler!(string_opt, "inference_default_upstream", default_upstream);
+ngx_conf_handler!(on_off, "inference_epp", epp_enable);
+ngx_conf_handler!(string_opt, "inference_epp_endpoint", epp_endpoint);
+ngx_conf_handler!(u64, "inference_epp_timeout_ms", epp_timeout_ms);
+ngx_conf_handler!(
+    on_off,
+    "inference_epp_failure_mode_allow",
+    epp_failure_mode_allow
+);
+ngx_conf_handler!(string, "inference_epp_header_name", epp_header_name);
+ngx_conf_handler!(on_off, "inference_epp_tls", epp_tls);
+ngx_conf_handler!(path, "inference_epp_ca_file", epp_ca_file);
 
 // NGINX directives table
+// SAFETY: Must be `static mut` because ngx_command_t contains raw pointers (*mut c_void, *mut u8)
+// which don't implement Sync, preventing use of immutable `static`. However, this is only written
+// during module initialization (single-threaded) and only read afterwards. nginx expects a mutable
+// pointer but never mutates it after initialization.
 static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 13] = [
     ngx_command_t {
         name: ngx_string!("inference_default_upstream"),
@@ -561,10 +512,68 @@ pub static mut ngx_http_inference_module: ngx_module_t = ngx_module_t {
 // Exposes the value of the "X-Inference-Upstream" header set by EPP for upstream selection.
 // Usage: proxy_pass http://$inference_upstream; (configured endpoint from EPP response)
 
+/// Helper function to allocate and set variable value from bytes
+///
+/// # Safety
+///
+/// This function must be called with the following guarantees:
+/// - `v` must be a valid, non-null pointer to an initialized `ngx_variable_value_t`
+/// - `v` must be properly aligned and point to valid memory
+/// - `pool` must be a valid nginx pool that will outlive the variable's lifetime
+/// - `bytes` must contain valid UTF-8 data that doesn't exceed u32::MAX in length
+/// - Caller must ensure no concurrent access to `*v` while this function executes
+#[inline]
+unsafe fn set_variable_from_bytes(
+    v: *mut ngx::ffi::ngx_variable_value_t,
+    pool: &ngx::core::Pool,
+    bytes: &[u8],
+) -> core::Status {
+    unsafe {
+        if bytes.is_empty() {
+            (*v).set_not_found(1);
+            (*v).set_len(0);
+            (*v).data = ::core::ptr::null_mut();
+            return core::Status::NGX_OK;
+        }
+
+        // Check for length overflow before casting to u32
+        if bytes.len() > u32::MAX as usize {
+            (*v).set_not_found(1);
+            (*v).set_len(0);
+            (*v).data = ::core::ptr::null_mut();
+            return core::Status::NGX_ERROR;
+        }
+
+        let data_ptr = pool.alloc(bytes.len());
+        if data_ptr.is_null() {
+            // mark not found on allocation error
+            (*v).set_not_found(1);
+            (*v).set_len(0);
+            (*v).data = ::core::ptr::null_mut();
+            return core::Status::NGX_ERROR;
+        }
+
+        ::core::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr as *mut u8, bytes.len());
+
+        // set ngx_variable_value_t fields
+        // SAFETY: Length checked above to fit in u32
+        (*v).set_len(bytes.len() as u32);
+        (*v).set_valid(1);
+        (*v).set_no_cacheable(0);
+        (*v).set_escape(0);
+        (*v).set_not_found(0);
+        (*v).data = data_ptr as *mut u8;
+
+        core::Status::NGX_OK
+    }
+}
+
 http_variable_get!(
     inference_upstream_var_get,
     |request: &mut http::Request, v: *mut ngx::ffi::ngx_variable_value_t, _data: usize| {
         // Evaluate $inference_upstream from "X-Inference-Upstream" header
+        // SAFETY: nginx guarantees request is non-null when calling variable handlers.
+        // The http_variable_get! macro converts the raw pointer to a reference.
         unsafe {
             if v.is_null() {
                 return core::Status::NGX_ERROR;
@@ -584,59 +593,12 @@ http_variable_get!(
             } else {
                 conf.epp_header_name.clone()
             };
+            let pool = request.pool();
+
             if let Some(val) = get_header_in(request, &upstream_header) {
-                let bytes = val.as_bytes();
-                if bytes.is_empty() {
-                    (*v).set_not_found(1);
-                    (*v).set_len(0);
-                    (*v).data = ::core::ptr::null_mut();
-                    return core::Status::NGX_OK;
-                }
-                // allocate buffer from request pool
-                let pool = request.pool();
-                let data_ptr = pool.alloc(bytes.len());
-                if data_ptr.is_null() {
-                    // mark not found on error
-                    (*v).set_not_found(1);
-                    (*v).set_len(0);
-                    (*v).data = ::core::ptr::null_mut();
-                    return core::Status::NGX_ERROR;
-                }
-                ::core::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr as *mut u8, bytes.len());
-                // set ngx_variable_value_t fields
-                (*v).set_len(bytes.len() as u32);
-                (*v).set_valid(1);
-                (*v).set_no_cacheable(0);
-                (*v).set_escape(0);
-                (*v).set_not_found(0);
-                (*v).data = data_ptr as *mut u8;
+                return set_variable_from_bytes(v, &pool, val.as_bytes());
             } else if let Some(ref default_upstream) = conf.default_upstream {
-                // Use default upstream when header not found
-                let bytes = default_upstream.as_bytes();
-                if bytes.is_empty() {
-                    (*v).set_not_found(1);
-                    (*v).set_len(0);
-                    (*v).data = ::core::ptr::null_mut();
-                    return core::Status::NGX_OK;
-                }
-                // allocate buffer from request pool
-                let pool = request.pool();
-                let data_ptr = pool.alloc(bytes.len());
-                if data_ptr.is_null() {
-                    // mark not found on error
-                    (*v).set_not_found(1);
-                    (*v).set_len(0);
-                    (*v).data = ::core::ptr::null_mut();
-                    return core::Status::NGX_ERROR;
-                }
-                ::core::ptr::copy_nonoverlapping(bytes.as_ptr(), data_ptr as *mut u8, bytes.len());
-                // set ngx_variable_value_t fields
-                (*v).set_len(bytes.len() as u32);
-                (*v).set_valid(1);
-                (*v).set_no_cacheable(0);
-                (*v).set_escape(0);
-                (*v).set_not_found(0);
-                (*v).data = data_ptr as *mut u8;
+                return set_variable_from_bytes(v, &pool, default_upstream.as_bytes());
             } else {
                 // mark variable as not found
                 (*v).set_not_found(1);
@@ -649,28 +611,64 @@ http_variable_get!(
 );
 
 // -------------------- Access Phase Handler --------------------
+//
+// Module Processing Pipeline:
+// ===========================
+// This handler runs in the ACCESS phase before upstream selection. It executes two
+// optional stages in sequence:
+//
+// 1. BBR (Body-Based Routing) - Extracts model name from request body
+//    - Reads request body (may be async)
+//    - Parses JSON to find "model" field
+//    - Sets X-Gateway-Model-Name header (or configured header name)
+//    - Can fail with 413 if body exceeds bbr_max_body_size
+//
+// 2. EPP (Endpoint Picker Processor) - Selects upstream endpoint
+//    - Sends request metadata to external gRPC service
+//    - Receives upstream endpoint selection
+//    - Sets X-Inference-Upstream header (or configured header name)
+//
+// Error Handling Strategy:
+// ========================
+// - BBR errors (except 413): Return HTTP 500, request terminates
+// - BBR 413 error: Return NGX_OK (request already finalized), proceeds to log phase
+// - EPP errors with fail-closed mode: Return HTTP 500, request terminates
+// - EPP errors with fail-open mode: Log error, continue processing (uses default_upstream if set)
+// - If BBR fails fatally, EPP never runs
+// - If BBR succeeds and EPP fails (fail-open), request continues to upstream with BBR headers
+//
+// Return Codes:
+// =============
+// - NGX_DONE: BBR started async body read, callback will resume processing
+// - NGX_OK: Request already finalized (e.g., 413 sent), proceed to log phase
+// - NGX_DECLINED: Processing complete, continue to next nginx phase (content/proxy)
+// - HTTP_500: Fatal error, nginx will send error response
 
 http_request_handler!(inference_access_handler, |request: &mut http::Request| {
     let conf = match Module::location_conf(request) {
         Some(c) => c,
         None => {
-            // Use error level for missing config since it's a setup issue
+            // Missing config is a fatal setup issue - fail the request
             unsafe {
-                let msg = b"ngx-inference: module config missing\0";
-                ngx::ffi::ngx_log_error_core(
-                    ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
-                    request.as_mut().connection.as_ref().unwrap().log,
-                    0,
-                    cstr_ptr(msg.as_ptr()),
-                );
+                let r = request.as_mut();
+                if let Some(conn) = r.connection.as_ref() {
+                    let msg = b"ngx-inference: module config missing, cannot process request\0";
+                    ngx::ffi::ngx_log_error_core(
+                        ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
+                        conn.log,
+                        0,
+                        cstr_ptr(msg.as_ptr()),
+                    );
+                }
             }
-            return core::Status::NGX_DECLINED;
+            return http::HTTPStatus::INTERNAL_SERVER_ERROR.into();
         }
     };
 
     // No routine logging - only log errors and warnings
 
     // Stage 1: BBR (Body-Based Routing)
+    // If this fails, EPP will NOT run (request terminates or is already finalized)
     if conf.bbr_enable {
         let bbr_status = BbrProcessor::process_request(request, conf);
         match bbr_status {
@@ -684,7 +682,13 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
                 if response_status
                     == ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t
                 {
-                    // Request was finalized with 413, don't continue processing
+                    // IMPORTANT: Return NGX_OK here, not an error status.
+                    // When BBR processing detects oversized body and sets 413:
+                    // - The request has already been finalized via ngx_http_finalize_request()
+                    // - Response headers and special response handler were already triggered
+                    // - Returning NGX_OK tells nginx: "access phase complete, proceed to next phase"
+                    // - The next phase will see the finalized status and skip to log phase
+                    // - Returning an error here would cause nginx to send *another* error response
                     return core::Status::NGX_OK;
                 }
                 // Otherwise continue processing
@@ -707,25 +711,30 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
             }
             core::Status::NGX_ERROR => {
                 unsafe {
-                    let msg = b"ngx-inference: EPP module processing failed internally\0";
-                    ngx::ffi::ngx_log_error_core(
-                        ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
-                        request.as_mut().connection.as_ref().unwrap().log,
-                        0,
-                        cstr_ptr(msg.as_ptr()),
-                    );
+                    let r = request.as_mut();
+                    if let Some(conn) = r.connection.as_ref() {
+                        let msg = b"ngx-inference: EPP module processing failed internally\0";
+                        ngx::ffi::ngx_log_error_core(
+                            ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
+                            conn.log,
+                            0,
+                            cstr_ptr(msg.as_ptr()),
+                        );
+                    }
                 }
                 if !conf.epp_failure_mode_allow {
                     // Fail closed
                     unsafe {
-                        let r_ptr: *mut ngx::ffi::ngx_http_request_t = request.as_mut();
-                        ngx::ffi::ngx_log_error_core(
-                            ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
-                            (*(*r_ptr).connection).log,
-                            0,
-                            #[allow(clippy::manual_c_str_literals)] // FFI code
-                            cstr_ptr(b"ngx-inference: Module returning HTTP 500 due to EPP processing failure (fail-closed mode)\0".as_ptr()),
-                        );
+                        let r = request.as_mut();
+                        if let Some(conn) = r.connection.as_ref() {
+                            ngx::ffi::ngx_log_error_core(
+                                ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
+                                conn.log,
+                                0,
+                                #[allow(clippy::manual_c_str_literals)] // FFI code
+                                cstr_ptr(b"ngx-inference: Module returning HTTP 500 due to EPP processing failure (fail-closed mode)\0".as_ptr()),
+                            );
+                        }
                     }
                     return http::HTTPStatus::INTERNAL_SERVER_ERROR.into();
                 }

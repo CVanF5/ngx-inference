@@ -5,35 +5,40 @@ use ngx::http::HttpModuleLocationConf;
 use ngx::{core, http, ngx_log_debug_http};
 use std::ffi::{c_char, c_void};
 
+// BBR Configuration Constants
+/// Maximum memory to pre-allocate for body reading (prevents excessive memory usage on untrusted Content-Length)
+const MAX_BODY_PREALLOC: usize = 1024 * 1024; // 1 MB
+/// Chunk size for reading file-backed request bodies
+const FILE_READ_CHUNK_SIZE: usize = 64 * 1024; // 64 KB
+/// Invalid file descriptor constant
+const INVALID_FD: i32 = -1;
+
 // Helper macro for info-level logging in BBR
 macro_rules! ngx_log_info_http {
     ($request:expr, $($arg:tt)*) => {{
         #[allow(unused_unsafe)]
         unsafe {
-            let msg = format!($($arg)*);
-            let c_msg = std::ffi::CString::new(msg).unwrap();
-            ngx::ffi::ngx_log_error_core(
-                ngx::ffi::NGX_LOG_INFO as ngx::ffi::ngx_uint_t,
-                ($request.as_mut().connection.as_ref().unwrap().log),
-                0,
-                c_msg.as_ptr(),
-            );
+            let r = $request.as_mut();
+            if let Some(conn) = r.connection.as_ref() {
+                let msg = format!($($arg)*);
+                if let Ok(c_msg) = std::ffi::CString::new(msg) {
+                    ngx::ffi::ngx_log_error_core(
+                        ngx::ffi::NGX_LOG_INFO as ngx::ffi::ngx_uint_t,
+                        conn.log,
+                        0,
+                        c_msg.as_ptr(),
+                    );
+                }
+            }
         }
     }};
 }
 
-// Platform-conditional string pointer casting for nginx FFI
-// macOS nginx FFI expects *const i8, Linux expects *const u8
-#[cfg(target_os = "macos")]
+// Platform-agnostic string pointer casting for nginx FFI
+// c_char can be either i8 or u8 depending on platform
 #[inline]
 fn cstr_ptr(s: *const u8) -> *const c_char {
-    s as *const i8
-}
-
-#[cfg(not(target_os = "macos"))]
-#[inline]
-fn cstr_ptr(s: *const u8) -> *const c_char {
-    s as *const c_char
+    s.cast::<c_char>()
 }
 
 /// Get an incoming request header value by name (case-insensitive).
@@ -244,8 +249,6 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
         // Add the model header to the request
         if request.add_header_in(&header_name, &model_name).is_some() {
             // Log successful model extraction at INFO level
-            let request: &mut http::Request =
-                unsafe { ngx::http::Request::from_ngx_http_request(r) };
             ngx_log_info_http!(
                 request,
                 "ngx-inference: BBR extracted model '{}' from request body",
@@ -253,16 +256,19 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
             );
         } else {
             unsafe {
-                ngx::ffi::ngx_log_error_core(
-                    ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
-                    (*(*r).connection).log,
-                    0,
-                    cstr_ptr(b"ngx-inference: BBR failed to set header %*s: %*s\0".as_ptr()),
-                    header_name.len(),
-                    header_name.as_ptr(),
-                    model_name.len(),
-                    model_name.as_ptr(),
-                );
+                let r_ref = &*r;
+                if let Some(conn) = r_ref.connection.as_ref() {
+                    ngx::ffi::ngx_log_error_core(
+                        ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
+                        conn.log,
+                        0,
+                        cstr_ptr(b"ngx-inference: BBR failed to set header %*s: %*s\0".as_ptr()),
+                        header_name.len(),
+                        header_name.as_ptr(),
+                        model_name.len(),
+                        model_name.as_ptr(),
+                    );
+                }
             }
         }
     } else {
@@ -271,7 +277,6 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
         let _ = request.add_header_in(&header_name, default_model);
 
         // Log default model usage at INFO level
-        let request: &mut http::Request = unsafe { ngx::http::Request::from_ngx_http_request(r) };
         ngx_log_info_http!(
             request,
             "ngx-inference: BBR using default model '{}' (no model found in body)",
@@ -283,7 +288,6 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
     // We must call ngx_http_core_run_phases to continue through content/proxy phase
     unsafe {
         if (*r).write_event_handler == Some(ngx::ffi::ngx_http_core_run_phases) {
-            let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
             ngx_log_debug_http!(
                 request,
                 "ngx-inference: BBR callback complete, resuming phases (async mode)"
@@ -292,7 +296,6 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
             // Resume phases - this will continue through content phase (proxy) and eventually log phase
             ngx::ffi::ngx_http_core_run_phases(r);
         } else {
-            let request: &mut http::Request = ngx::http::Request::from_ngx_http_request(r);
             ngx_log_info_http!(
                 request,
                 "ngx-inference: BBR callback complete (sync mode, no resume needed)"
@@ -301,7 +304,47 @@ pub unsafe extern "C" fn bbr_body_read_handler(r: *mut ngx::ffi::ngx_http_reques
     }
 }
 
+/// Helper function to set 413 Request Entity Too Large error
+///
+/// # Safety
+///
+/// This function must be called with the following guarantees:
+/// - `r` must be a valid, non-null pointer to an initialized `ngx_http_request_t`
+/// - Must be called from within an unsafe block
+#[inline]
+unsafe fn set_413_error(r: *mut ngx::ffi::ngx_http_request_t, actual_size: usize, max_size: usize) {
+    unsafe {
+        let r_ref = &*r;
+        if let Some(conn) = r_ref.connection.as_ref() {
+            ngx::ffi::ngx_log_error_core(
+                ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
+                conn.log,
+                0,
+                #[allow(clippy::manual_c_str_literals)] // FFI code
+                cstr_ptr(
+                    b"ngx-inference: Module returning HTTP 413 - payload size %uz bytes exceeds BBR limit %uz bytes\0"
+                        .as_ptr(),
+                ),
+                actual_size,
+                max_size,
+            );
+        }
+        (*r).headers_out.status =
+            ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
+    }
+}
+
 /// Read the request body from memory and file buffers
+///
+/// # Safety
+///
+/// This function must be called with the following guarantees:
+/// - `r` must be a valid, non-null pointer to an initialized `ngx_http_request_t`
+/// - The request must have a valid `request_body` structure (checked internally)
+/// - The request body buffers must remain valid for the duration of this function
+/// - `conf` must contain valid configuration values
+/// - Caller must ensure no concurrent access to the request body buffers
+/// - File descriptors in nginx file structures must be valid if not INVALID_FD
 unsafe fn read_request_body(
     r: *mut ngx::ffi::ngx_http_request_t,
     conf: &ModuleConfig,
@@ -324,8 +367,8 @@ unsafe fn read_request_body(
             .unwrap_or(0)
     };
 
-    // Cap memory allocation to reasonable size (1MB) to prevent excessive memory usage
-    let safe_capacity = std::cmp::min(content_length, 1024 * 1024);
+    // Cap memory allocation to reasonable size to prevent excessive memory usage
+    let safe_capacity = std::cmp::min(content_length, MAX_BODY_PREALLOC);
     let mut body: Vec<u8> = Vec::with_capacity(safe_capacity);
     let mut total_read = 0usize;
 
@@ -357,17 +400,7 @@ unsafe fn read_request_body(
                     );
 
                     unsafe {
-                        ngx::ffi::ngx_log_error_core(
-                            ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
-                            (*(*r).connection).log,
-                            0,
-                            #[allow(clippy::manual_c_str_literals)] // FFI code
-                            cstr_ptr(b"ngx-inference: Module returning HTTP 413 - payload size %uz bytes exceeds BBR limit %uz bytes\0".as_ptr()),
-                            total_read + len,
-                            conf.bbr_max_body_size
-                        );
-                        (*r).headers_out.status =
-                            ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
+                        set_413_error(r, total_read + len, conf.bbr_max_body_size);
                     }
                     return Err(());
                 }
@@ -398,48 +431,55 @@ unsafe fn read_request_body(
                     );
 
                     unsafe {
-                        ngx::ffi::ngx_log_error_core(
-                            ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
-                            (*(*r).connection).log,
-                            0,
-                            #[allow(clippy::manual_c_str_literals)] // FFI code
-                            cstr_ptr(b"ngx-inference: Module returning HTTP 413 - payload size %uz bytes exceeds BBR limit %uz bytes\0".as_ptr()),
-                            total_read + file_size,
-                            conf.bbr_max_body_size
-                        );
-                        (*r).headers_out.status =
-                            ngx::ffi::NGX_HTTP_REQUEST_ENTITY_TOO_LARGE as ngx::ffi::ngx_uint_t;
+                        set_413_error(r, total_read + file_size, conf.bbr_max_body_size);
                     }
                     return Err(());
                 }
 
                 // Read from file descriptor
                 let fd = unsafe { (*file).fd };
-                if fd != -1 {
+                if fd != INVALID_FD {
                     // Create buffer for file content
                     let mut file_buffer = vec![0u8; file_size];
                     let mut bytes_read = 0usize;
                     // Read file content in chunks
                     while bytes_read < file_size {
-                        let chunk_size = std::cmp::min(64 * 1024, file_size - bytes_read); // 64KB chunks
+                        let chunk_size =
+                            std::cmp::min(FILE_READ_CHUNK_SIZE, file_size - bytes_read);
+                        // Use saturating_add to prevent integer overflow on large file positions
+                        let offset = file_pos.saturating_add(bytes_read as i64);
                         let result = unsafe {
                             libc::pread(
                                 fd,
                                 file_buffer.as_mut_ptr().add(bytes_read) as *mut c_void,
                                 chunk_size,
-                                (file_pos + bytes_read as i64) as libc::off_t,
+                                offset as libc::off_t,
                             )
                         };
 
                         if result <= 0 {
+                            // File read error - this is a fatal error, not partial data scenario
                             let request: &mut http::Request =
                                 unsafe { ngx::http::Request::from_ngx_http_request(r) };
                             ngx_log_debug_http!(
                                 request,
-                                "ngx-inference: BBR file read error at offset {}",
-                                bytes_read
+                                "ngx-inference: BBR file read error at offset {}, result: {}",
+                                bytes_read,
+                                result
                             );
-                            break;
+                            unsafe {
+                                let r_ref = &*r;
+                                if let Some(conn) = r_ref.connection.as_ref() {
+                                    ngx::ffi::ngx_log_error_core(
+                                        ngx::ffi::NGX_LOG_ERR as ngx::ffi::ngx_uint_t,
+                                        conn.log,
+                                        0,
+                                        #[allow(clippy::manual_c_str_literals)] // FFI code
+                                        cstr_ptr(b"ngx-inference: Failed to read request body from file\0".as_ptr()),
+                                    );
+                                }
+                            }
+                            return Err(());
                         }
                         bytes_read += result as usize;
                     }
