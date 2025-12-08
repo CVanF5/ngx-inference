@@ -127,8 +127,7 @@ helm install vllm-llama3-8b-instruct vllm/vllm \
   --set env[0].value="${HF_TOKEN}" \
   --wait --timeout 10m
 
-# Alternative: Deploy via YAML (if Helm is not available)
-# kubectl apply -f tests/kind-ngf/manifests/02-vllm-backend.yaml
+
 
 # Wait for vLLM to be ready (this can take several minutes)
 kubectl wait --for=condition=ready pod -l app.kubernetes.io/name=vllm \
