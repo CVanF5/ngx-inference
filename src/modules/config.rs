@@ -5,7 +5,7 @@ use ngx::http::MergeConfigError;
 pub struct ModuleConfig {
     // Global settings
     pub default_upstream: Option<String>, // global default upstream for both BBR and EPP failures
-    pub max_body_size: usize,             // max body size for processing (applies to BBR and EPP, default 10MB)
+    pub max_body_size: usize, // max body size for processing (applies to BBR and EPP, default 10MB)
 
     // BBR (Body-Based Routing) - implemented directly in module
     pub bbr_enable: bool,

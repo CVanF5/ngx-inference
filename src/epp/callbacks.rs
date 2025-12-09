@@ -496,7 +496,7 @@ unsafe fn setup_result_timer(r: *mut ngx_http_request_t, watcher_ptr: *mut Resul
     let event_ptr = unsafe {
         ngx::ffi::ngx_pcalloc(conn_pool, std::mem::size_of::<ngx_event_t>()) as *mut ngx_event_t
     };
-    
+
     if event_ptr.is_null() {
         return false;
     }
@@ -568,9 +568,9 @@ unsafe extern "C" fn check_epp_result(ev: *mut ngx_event_t) {
     }
 
     // Check if request has already been finalized/completed
-    // If count is 0 or negative, request is being/has been freed
+    // If count is 0, request is being/has been freed
     let count = unsafe { (*r).count() };
-    if count <= 0 {
+    if count == 0 {
         // Request is being freed, clean up timer and return
         unsafe {
             ngx_del_timer(ev);
