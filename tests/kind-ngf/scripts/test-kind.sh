@@ -78,7 +78,7 @@ display_logs() {
 
     if [ -n "$nginx_pod" ]; then
         echo -e "${BLUE}NGINX Logs:${NC}"
-        kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=15 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
+        kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=25 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
     fi
 
     if [ -n "$vllm_pod" ]; then
@@ -289,7 +289,7 @@ run_test_for_scenario() {
         # Show EPP logs for the vLLM request
         if [ -n "$nginx_pod" ]; then
             echo -e "${BLUE}  NGINX logs after vLLM request (EPP activity):${NC}"
-            local recent_logs=$(kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=15 2>/dev/null)
+            local recent_logs=$(kubectl logs -n "$NAMESPACE" "$nginx_pod" --tail=25 2>/dev/null)
             echo "$recent_logs" | grep -E "(EPP gRPC|Selected upstream|DEBUG: Found header.*with value)" | sed 's/^/    /' || echo "    (No EPP logs found)"
         fi
     fi

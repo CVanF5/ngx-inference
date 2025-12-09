@@ -12,6 +12,7 @@ use ngx::http::{HttpModuleLocationConf, HttpModuleMainConf, NgxHttpCoreModule};
 use ngx::{http_request_handler, http_variable_get, ngx_conf_log_error, ngx_string};
 
 /* Internal modules for gRPC ext-proc client and generated protos */
+pub mod epp;
 pub mod grpc;
 pub mod model_extractor;
 pub mod modules;
@@ -708,6 +709,10 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
         match EppProcessor::process_request(request, conf) {
             core::Status::NGX_DECLINED => {
                 // EPP processed successfully or was skipped, continue
+            }
+            core::Status::NGX_DONE => {
+                // EPP started async processing, suspend request
+                return core::Status::NGX_DONE;
             }
             core::Status::NGX_ERROR => {
                 unsafe {
