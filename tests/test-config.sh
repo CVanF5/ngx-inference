@@ -244,7 +244,7 @@ display_logs() {
         # Local environment - show log files
         echo -e "${BLUE}Nginx Error Log:${NC}"
         if [ -f /tmp/nginx-ngx-inference-error.log ]; then
-            tail -15 /tmp/nginx-ngx-inference-error.log 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
+            tail -35 /tmp/nginx-ngx-inference-error.log 2>/dev/null | sed 's/^/  /' || echo "  (No logs available)"
         else
             echo "  (Log file not found)"
         fi

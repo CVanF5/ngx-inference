@@ -89,7 +89,7 @@ impl BbrProcessor {
         ngx_log_debug_http!(
             request,
             "ngx-inference: BBR processing request, max_body_size: {}",
-            conf.bbr_max_body_size
+            conf.max_body_size
         );
 
         // Start body reading for BBR processing
@@ -385,29 +385,59 @@ unsafe fn read_request_body(
         let last = unsafe { (*buf).last };
         if !pos.is_null() && !last.is_null() && last >= pos {
             let len = unsafe { last.offset_from(pos) };
+
+            // Validate length is non-negative
+            if len < 0 {
+                let request: &mut http::Request =
+                    unsafe { ngx::http::Request::from_ngx_http_request(r) };
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: BBR buffer has negative length {}",
+                    len
+                );
+                return Err(());
+            }
+
+            // Validate length is within safe bounds for slice::from_raw_parts
+            // The total size must not exceed isize::MAX
+            if len > isize::MAX / 2 {
+                let request: &mut http::Request =
+                    unsafe { ngx::http::Request::from_ngx_http_request(r) };
+                ngx_log_debug_http!(
+                    request,
+                    "ngx-inference: BBR buffer length {} exceeds safe limits (isize::MAX/2 = {})",
+                    len,
+                    isize::MAX / 2
+                );
+                unsafe {
+                    set_413_error(r, len as usize, conf.max_body_size);
+                }
+                return Err(());
+            }
+
             if len > 0 {
-                let len = len as usize;
+                let len_usize = len as usize;
 
                 // Check if adding this buffer would exceed the BBR limit
-                if total_read + len > conf.bbr_max_body_size {
+                if total_read + len_usize > conf.max_body_size {
                     let request: &mut http::Request =
                         unsafe { ngx::http::Request::from_ngx_http_request(r) };
                     ngx_log_debug_http!(
                         request,
                         "ngx-inference: BBR actual body size {} exceeds limit {}",
-                        total_read + len,
-                        conf.bbr_max_body_size
+                        total_read + len_usize,
+                        conf.max_body_size
                     );
 
                     unsafe {
-                        set_413_error(r, total_read + len, conf.bbr_max_body_size);
+                        set_413_error(r, total_read + len_usize, conf.max_body_size);
                     }
                     return Err(());
                 }
 
-                let slice = unsafe { std::slice::from_raw_parts(pos as *const u8, len) };
+                let slice = unsafe { std::slice::from_raw_parts(pos as *const u8, len_usize) };
                 body.extend_from_slice(slice);
-                total_read += len;
+                total_read += len_usize;
             }
         }
 
@@ -420,18 +450,18 @@ unsafe fn read_request_body(
 
             if file_size > 0 {
                 // Check if adding this file buffer would exceed the BBR limit
-                if total_read + file_size > conf.bbr_max_body_size {
+                if total_read + file_size > conf.max_body_size {
                     let request: &mut http::Request =
                         unsafe { ngx::http::Request::from_ngx_http_request(r) };
                     ngx_log_debug_http!(
                         request,
                         "ngx-inference: BBR actual body size {} exceeds limit {}",
                         total_read + file_size,
-                        conf.bbr_max_body_size
+                        conf.max_body_size
                     );
 
                     unsafe {
-                        set_413_error(r, total_read + file_size, conf.bbr_max_body_size);
+                        set_413_error(r, total_read + file_size, conf.max_body_size);
                     }
                     return Err(());
                 }

@@ -21,16 +21,16 @@ location /v1/chat/completions {
 }
 ```
 
-#### `inference_bbr_max_body_size`
+#### `inference_max_body_size`
 
-- **Syntax**: `inference_bbr_max_body_size <bytes>`
+- **Syntax**: `inference_max_body_size <bytes>`
 - **Default**: `10485760` (10MB)
 - **Context**: `http`, `server`, `location`
+- **Description**: Maximum request body size for processing (applies to both BBR and EPP)
 
-Sets the maximum request body size (in bytes) that BBR will process. Requests larger than this size will be rejected with HTTP 413 (if fail-closed) or skipped (if fail-open).
-
+**Example**:
 ```nginx
-inference_bbr_max_body_size 52428800; # 50MB
+inference_max_body_size 52428800; # 50MB
 ```
 
 #### `inference_bbr_header_name`
@@ -154,7 +154,7 @@ server {
 
     location /v1/chat/completions {
         inference_bbr on;
-        inference_bbr_max_body_size 20971520; # 20MB
+        inference_max_body_size 20971520; # 20MB
 
         proxy_pass http://ai-backend:8080;
         proxy_set_header Host $host;
@@ -173,7 +173,7 @@ server {
     location /v1/chat/completions {
         # Enable BBR for model extraction
         inference_bbr on;
-        inference_bbr_max_body_size 104857600; # 100MB
+        inference_max_body_size 104857600; # 100MB
         inference_bbr_failure_mode_allow off; # Fail-closed
 
         # Enable EPP for intelligent routing
@@ -230,7 +230,7 @@ error_log /var/log/nginx/error.log warn;
 
 ### Performance
 
-1. **Body Size Limits**: Set appropriate `inference_bbr_max_body_size` based on your AI model requirements
+1. **Body Size Limits**: Set appropriate `inference_max_body_size` based on your AI model requirements
 2. **Timeouts**: Configure `inference_epp_timeout_ms` to balance responsiveness and reliability
 3. **Connection Pooling**: Use `keepalive` directives in upstream blocks for better performance
 
@@ -253,4 +253,4 @@ error_log /var/log/nginx/error.log warn;
 1. **Module not loading**: Check module path and NGINX configuration syntax
 2. **BBR not extracting models**: Verify JSON request body format and content-type headers
 3. **EPP connection failures**: Check external processor service availability and network connectivity
-4. **High memory usage**: Adjust `inference_bbr_max_body_size` and implement proper body size limits
+4. **High memory usage**: Adjust `inference_max_body_size` and implement proper body size limits

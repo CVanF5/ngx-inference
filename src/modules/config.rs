@@ -5,11 +5,11 @@ use ngx::http::MergeConfigError;
 pub struct ModuleConfig {
     // Global settings
     pub default_upstream: Option<String>, // global default upstream for both BBR and EPP failures
+    pub max_body_size: usize,             // max body size for processing (applies to BBR and EPP, default 10MB)
 
     // BBR (Body-Based Routing) - implemented directly in module
     pub bbr_enable: bool,
     pub bbr_header_name: String,   // default "X-Gateway-Model-Name"
-    pub bbr_max_body_size: usize,  // default 10MB limit for BBR processing
     pub bbr_default_model: String, // default model when none found in body
 
     // EPP (Endpoint Picker Processor)
@@ -26,10 +26,10 @@ impl Default for ModuleConfig {
     fn default() -> Self {
         Self {
             default_upstream: None,
+            max_body_size: 10 * 1024 * 1024, // 10MB
 
             bbr_enable: false,
             bbr_header_name: "X-Gateway-Model-Name".to_string(),
-            bbr_max_body_size: 10 * 1024 * 1024, // 10MB
             bbr_default_model: "unknown".to_string(),
 
             epp_enable: false,
@@ -62,6 +62,13 @@ impl ngx::http::Merge for ModuleConfig {
         }
 
         // Inherit numeric with defaults
+        if self.max_body_size == 0 {
+            self.max_body_size = if prev.max_body_size == 0 {
+                10 * 1024 * 1024
+            } else {
+                prev.max_body_size
+            }; // 10MB default
+        }
         if self.epp_timeout_ms == 0 {
             self.epp_timeout_ms = if prev.epp_timeout_ms == 0 {
                 200
@@ -82,13 +89,6 @@ impl ngx::http::Merge for ModuleConfig {
             } else {
                 prev.bbr_default_model.clone()
             }
-        }
-        if self.bbr_max_body_size == 0 {
-            self.bbr_max_body_size = if prev.bbr_max_body_size == 0 {
-                10 * 1024 * 1024
-            } else {
-                prev.bbr_max_body_size
-            }; // 10MB default
         }
         if self.epp_header_name.is_empty() {
             self.epp_header_name = if prev.epp_header_name.is_empty() {
