@@ -45,21 +45,12 @@ pub fn spawn_epp_task(
 ) {
     let rt = get_runtime();
 
-    eprintln!("[EPP-ASYNC] Spawning task for endpoint: {}", ctx.endpoint);
-
     rt.spawn(async move {
-        eprintln!("[EPP-ASYNC] Task started, calling process_epp_async");
         let result = process_epp_async(ctx, body).await;
-        eprintln!("[EPP-ASYNC] Task got result: {:?}", result);
         // Send result back to NGINX worker thread
         // Ignore send errors (channel dropped means request was cancelled)
-        match sender.send(result) {
-            Ok(_) => eprintln!("[EPP-ASYNC] Result sent successfully"),
-            Err(_) => eprintln!("[EPP-ASYNC] Failed to send result - channel closed"),
-        }
+        let _ = sender.send(result);
     });
-
-    eprintln!("[EPP-ASYNC] Task spawned, returning");
 }
 
 /// Process EPP request asynchronously

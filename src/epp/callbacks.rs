@@ -344,6 +344,13 @@ unsafe fn extract_request_body(r: *mut ngx_http_request_t) -> Result<Vec<u8>, &'
         return Ok(Vec::new());
     }
 
+    // Get max_body_size from config
+    let request: &mut ngx::http::Request = unsafe { ngx::http::Request::from_ngx_http_request(r) };
+    let max_body_size = match crate::Module::location_conf(request) {
+        Some(conf) => conf.max_body_size,
+        None => 10 * 1024 * 1024, // Default 10MB
+    };
+
     let mut body = Vec::new();
     let mut total_read = 0usize;
 
@@ -388,6 +395,17 @@ unsafe fn extract_request_body(r: *mut ngx_http_request_t) -> Result<Vec<u8>, &'
                 let file_size = (file_last - file_pos) as usize;
 
                 if file_size > 0 {
+                    // Check if adding this file buffer would exceed max_body_size
+                    if total_read + file_size > max_body_size {
+                        ngx_log_error_raw!(
+                            r,
+                            "ngx-inference: EPP body size {} exceeds limit {}",
+                            total_read + file_size,
+                            max_body_size
+                        );
+                        return Err("body too large");
+                    }
+
                     let fd = unsafe { (*file).fd };
                     if fd != INVALID_FD {
                         // Create buffer for file content
@@ -471,13 +489,24 @@ unsafe fn setup_result_timer(r: *mut ngx_http_request_t, watcher_ptr: *mut Resul
         return false;
     }
 
-    // CRITICAL: Allocate timer event from HEAP, not request pool
-    // Request pool might be freed before timer fires!
-    let mut event = Box::new(unsafe { std::mem::zeroed::<ngx_event_t>() });
-    event.data = watcher_ptr as *mut _;
-    event.handler = Some(check_epp_result);
-    event.log = unsafe { (*conn).log };
-    let event_ptr = Box::into_raw(event);
+    // CRITICAL: Allocate timer event from CONNECTION pool
+    // Connection pool lives longer than requests and persists until connection closes
+    // This is automatically freed when connection is closed
+    let conn_pool = unsafe { (*conn).pool };
+    let event_ptr = unsafe {
+        ngx::ffi::ngx_pcalloc(conn_pool, std::mem::size_of::<ngx_event_t>()) as *mut ngx_event_t
+    };
+    
+    if event_ptr.is_null() {
+        return false;
+    }
+
+    // Initialize event
+    unsafe {
+        (*event_ptr).data = watcher_ptr as *mut _;
+        (*event_ptr).handler = Some(check_epp_result);
+        (*event_ptr).log = (*conn).log;
+    }
 
     // Add timer
     unsafe {
@@ -486,7 +515,7 @@ unsafe fn setup_result_timer(r: *mut ngx_http_request_t, watcher_ptr: *mut Resul
 
     ngx_log_debug_raw!(
         r,
-        "ngx-inference: EPP result timer added at {:p}",
+        "ngx-inference: EPP result timer added at {:p} (conn pool)",
         event_ptr
     );
     true
@@ -548,6 +577,30 @@ unsafe extern "C" fn check_epp_result(ev: *mut ngx_event_t) {
             let _ = Box::from_raw(watcher_ptr);
             // DON'T free timer event - NGINX manages it
         }
+        return;
+    }
+
+    // Check for timeout FIRST
+    if watcher.is_timed_out() {
+        ngx_log_error_raw!(
+            r,
+            "ngx-inference: EPP timer fired - timeout exceeded ({} ms)",
+            watcher.ctx.timeout_ms
+        );
+
+        // Delete the timer
+        unsafe {
+            ngx_del_timer(ev);
+        }
+
+        // Clone context before taking ownership
+        let ctx = watcher.ctx.clone();
+
+        // Clean up watcher
+        let _watcher = unsafe { Box::from_raw(watcher_ptr) };
+
+        // Handle as failure
+        unsafe { handle_epp_failure(r, &ctx) };
         return;
     }
 

@@ -351,7 +351,7 @@ macro_rules! ngx_conf_handler {
 
 // Generate all configuration handlers using the macro
 ngx_conf_handler!(on_off, "inference_bbr", bbr_enable);
-ngx_conf_handler!(usize, "inference_bbr_max_body_size", bbr_max_body_size);
+ngx_conf_handler!(usize, "inference_max_body_size", max_body_size);
 ngx_conf_handler!(string, "inference_bbr_header_name", bbr_header_name);
 ngx_conf_handler!(string, "inference_bbr_default_model", bbr_default_model);
 ngx_conf_handler!(string_opt, "inference_default_upstream", default_upstream);
@@ -392,10 +392,10 @@ static mut NGX_HTTP_INFERENCE_COMMANDS: [ngx_command_t; 13] = [
         post: std::ptr::null_mut(),
     },
     ngx_command_t {
-        name: ngx_string!("inference_bbr_max_body_size"),
+        name: ngx_string!("inference_max_body_size"),
         type_: ((NGX_HTTP_MAIN_CONF | NGX_HTTP_SRV_CONF | NGX_HTTP_LOC_CONF) | NGX_CONF_TAKE1)
             as ngx_uint_t,
-        set: Some(ngx_http_inference_set_bbr_max_body_size),
+        set: Some(ngx_http_inference_set_max_body_size),
         conf: NGX_HTTP_LOC_CONF_OFFSET,
         offset: 0,
         post: std::ptr::null_mut(),
@@ -622,7 +622,7 @@ http_variable_get!(
 //    - Reads request body (may be async)
 //    - Parses JSON to find "model" field
 //    - Sets X-Gateway-Model-Name header (or configured header name)
-//    - Can fail with 413 if body exceeds bbr_max_body_size
+//    - Can fail with 413 if body exceeds max_body_size
 //
 // 2. EPP (Endpoint Picker Processor) - Selects upstream endpoint
 //    - Sends request metadata to external gRPC service

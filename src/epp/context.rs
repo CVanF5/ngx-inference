@@ -41,6 +41,9 @@ pub struct AsyncEppContext {
 /// This structure is passed to the NGINX timer callback to check for
 /// async EPP results. It contains a oneshot channel receiver and the
 /// request pointer (only used in NGINX worker context).
+///
+/// Note: The timer event is allocated from the connection pool and will be
+/// automatically freed when the connection closes.
 pub struct ResultWatcher {
     /// Receiver for EPP result from async task
     pub receiver: oneshot::Receiver<Result<String, String>>,
@@ -50,11 +53,14 @@ pub struct ResultWatcher {
 
     /// Context for error handling
     pub ctx: AsyncEppContext,
+
+    /// Start time in milliseconds (for timeout tracking)
+    pub start_time_ms: u64,
 }
 
 // Safety: ResultWatcher is Send because:
 // 1. oneshot::Receiver is Send
-// 2. The raw pointer is only dereferenced in the NGINX worker thread
+// 2. The raw pointers are only dereferenced in the NGINX worker thread
 // 3. NGINX event timers ensure the callback runs in the correct thread context
 unsafe impl Send for ResultWatcher {}
 
@@ -69,8 +75,23 @@ impl ResultWatcher {
             receiver,
             request,
             ctx,
+            start_time_ms: current_time_ms(),
         }
     }
+
+    /// Check if the timeout has been exceeded
+    pub fn is_timed_out(&self) -> bool {
+        let elapsed_ms = current_time_ms().saturating_sub(self.start_time_ms);
+        elapsed_ms > self.ctx.timeout_ms
+    }
+}
+
+/// Get current time in milliseconds
+fn current_time_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis() as u64
 }
 
 /// Context for body read callback
