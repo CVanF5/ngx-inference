@@ -284,7 +284,7 @@ unsafe extern "C" fn body_read_done(r: *mut ngx_http_request_t) {
         Ok(b) => b,
         Err(e) => {
             ngx_log_error_raw!(r, "ngx-inference: EPP failed to extract body: {}", e);
-            unsafe { handle_epp_failure(r, &epp_ctx) };
+            unsafe { handle_epp_failure(r, &epp_ctx, ngx::ffi::NGX_HTTP_BAD_GATEWAY as ngx_int_t) };
             return;
         }
     };
@@ -314,7 +314,7 @@ unsafe extern "C" fn body_read_done(r: *mut ngx_http_request_t) {
             let _ = Box::from_raw(watcher_ptr);
         }
         // Just call failure handler - don't finalize in callback!
-        unsafe { handle_epp_failure(r, &epp_ctx) };
+        unsafe { handle_epp_failure(r, &epp_ctx, ngx::ffi::NGX_HTTP_BAD_GATEWAY as ngx_int_t) };
     }
 }
 
@@ -599,8 +599,8 @@ unsafe extern "C" fn check_epp_result(ev: *mut ngx_event_t) {
         // Clean up watcher
         let _watcher = unsafe { Box::from_raw(watcher_ptr) };
 
-        // Handle as failure
-        unsafe { handle_epp_failure(r, &ctx) };
+        // Handle as failure (timeout => 504)
+        unsafe { handle_epp_failure(r, &ctx, ngx::ffi::NGX_HTTP_GATEWAY_TIME_OUT as ngx_int_t) };
         return;
     }
 
@@ -670,7 +670,9 @@ unsafe extern "C" fn check_epp_result(ev: *mut ngx_event_t) {
 
             // DON'T free the timer event
 
-            unsafe { handle_epp_failure(r, &watcher.ctx) };
+            unsafe {
+                handle_epp_failure(r, &watcher.ctx, ngx::ffi::NGX_HTTP_BAD_GATEWAY as ngx_int_t)
+            };
         }
     }
 }
@@ -695,7 +697,7 @@ unsafe fn process_epp_result(
             ngx_log_debug_raw!(r, "ngx-inference: EPP about to set header");
             if !unsafe { set_upstream_header(r, &ctx.upstream_header, &upstream) } {
                 ngx_log_error_raw!(r, "ngx-inference: EPP failed to set upstream header");
-                unsafe { handle_epp_failure(r, ctx) };
+                unsafe { handle_epp_failure(r, ctx, ngx::ffi::NGX_HTTP_BAD_GATEWAY as ngx_int_t) };
                 return;
             }
 
@@ -708,7 +710,7 @@ unsafe fn process_epp_result(
         }
         Err(e) => {
             ngx_log_error_raw!(r, "ngx-inference: EPP failed: {}", e);
-            unsafe { handle_epp_failure(r, ctx) };
+            unsafe { handle_epp_failure(r, ctx, ngx::ffi::NGX_HTTP_BAD_GATEWAY as ngx_int_t) };
         }
     }
 }
@@ -718,7 +720,11 @@ unsafe fn process_epp_result(
 /// # Safety
 ///
 /// Must be called with valid request pointer in NGINX worker context.
-unsafe fn handle_epp_failure(r: *mut ngx_http_request_t, ctx: &AsyncEppContext) {
+unsafe fn handle_epp_failure(
+    r: *mut ngx_http_request_t,
+    ctx: &AsyncEppContext,
+    status_code: ngx_int_t,
+) {
     // Clear the post_handler to prevent callback re-execution (like BBR does)
     let req_body = unsafe { (*r).request_body };
     if !req_body.is_null() {
@@ -744,16 +750,14 @@ unsafe fn handle_epp_failure(r: *mut ngx_http_request_t, ctx: &AsyncEppContext) 
         }
     } else {
         // Fail-closed: send error response using special_response_handler (like BBR does)
-        ngx_log_error_raw!(r, "ngx-inference: EPP fail-closed mode, returning error");
+        ngx_log_error_raw!(
+            r,
+            "ngx-inference: EPP fail-closed mode, returning error status {}",
+            status_code
+        );
         unsafe {
-            ngx::ffi::ngx_http_special_response_handler(
-                r,
-                ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx_int_t,
-            );
-            ngx::ffi::ngx_http_finalize_request(
-                r,
-                ngx::ffi::NGX_HTTP_INTERNAL_SERVER_ERROR as ngx_int_t,
-            );
+            ngx::ffi::ngx_http_special_response_handler(r, status_code);
+            ngx::ffi::ngx_http_finalize_request(r, status_code);
         }
     }
 }

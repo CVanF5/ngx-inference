@@ -633,7 +633,7 @@ http_variable_get!(
 // ========================
 // - BBR errors (except 413): Return HTTP 500, request terminates
 // - BBR 413 error: Return NGX_OK (request already finalized), proceeds to log phase
-// - EPP errors with fail-closed mode: Return HTTP 500, request terminates
+// - EPP errors with fail-closed mode: Return HTTP 502 (Bad Gateway), or 504 on timeout; request terminates
 // - EPP errors with fail-open mode: Log error, continue processing (uses default_upstream if set)
 // - If BBR fails fatally, EPP never runs
 // - If BBR succeeds and EPP fails (fail-open), request continues to upstream with BBR headers
@@ -737,11 +737,11 @@ http_request_handler!(inference_access_handler, |request: &mut http::Request| {
                                 conn.log,
                                 0,
                                 #[allow(clippy::manual_c_str_literals)] // FFI code
-                                cstr_ptr(b"ngx-inference: Module returning HTTP 500 due to EPP processing failure (fail-closed mode)\0".as_ptr()),
+                                cstr_ptr(b"ngx-inference: Module returning HTTP 502 (Bad Gateway) due to EPP processing failure (fail-closed mode)\0".as_ptr()),
                             );
                         }
                     }
-                    return http::HTTPStatus::INTERNAL_SERVER_ERROR.into();
+                    return http::HTTPStatus::BAD_GATEWAY.into();
                 }
             }
             _ => {

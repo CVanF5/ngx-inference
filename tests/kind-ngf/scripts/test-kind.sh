@@ -220,8 +220,8 @@ run_test_for_scenario() {
         if [ "$http_code" = "200" ]; then
             echo -e "${GREEN}   EPP endpoint responded: HTTP $http_code${NC}"
         elif [ "$http_code" = "500" ] || [ "$http_code" = "502" ] || [ "$http_code" = "503" ] || [ "$http_code" = "504" ]; then
-            # For untrusted TLS deny scenario, HTTP 500 is expected (internal processing failure) and should be treated as success
-            if [[ "$scenario" == "bbr_off_epp_on_untrusted_tls_deny" && "$http_code" = "500" ]]; then
+            # For untrusted TLS deny scenario, upstream failure should be treated as success; expect 502 (connect/TLS) or 504 (timeout)
+            if [[ "$scenario" == "bbr_off_epp_on_untrusted_tls_deny" && ( "$http_code" = "502" || "$http_code" = "504" ) ]]; then
                 echo -e "${GREEN}   EPP endpoint failed as expected (untrusted TLS, fail-closed): HTTP $http_code${NC}"
                 echo -e "${GREEN}  Response body: $body${NC}"
             else
