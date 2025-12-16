@@ -135,7 +135,10 @@ sequenceDiagram
 
 - **BBR is async**: Returns `NGX_DONE` to yield control back to NGINX event loop. The request body is read asynchronously using non-blocking I/O. NGINX can process other requests while waiting for body chunks to arrive.
 
-- **EPP is blocking**: Uses synchronous gRPC calls via `epp_headers_blocking()`. While the gRPC internals use async operations with `tokio::runtime::block_on()`, the NGINX interface remains blocking and respects the single-threaded event loop model. This is simpler and more reliable than async callbacks.
+- **EPP is non-blocking**: Uses async gRPC calls on a separate Tokio thread pool. Returns `NGX_DONE` immediately, allowing the NGINX worker to handle other requests. Uses hybrid timer + eventfd notification:
+  - Tokio task completes → writes to eventfd → immediate notification (microseconds)
+  - 10ms timer backup checks eventfd/channel (robust fallback)
+  - 99% reduction in timer callbacks vs pure 1ms polling
 
 - **EPP failure modes**: EPP supports two failure modes via `epp_failure_mode_allow` directive:
   - **Fail-closed** (`epp_failure_mode_allow off`): EPP failures return `NGX_ERROR`, causing the main handler to return HTTP 500

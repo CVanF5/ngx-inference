@@ -68,11 +68,6 @@ echo -e "${BLUE}=== NGX-INFERENCE LOCAL NGINX TESTS ===${NC}"
 echo ""
 
 # Check prerequisites
-if ! command -v nginx >/dev/null 2>&1; then
-    echo -e "${RED}✗ nginx not found. Please install nginx locally.${NC}"
-    exit 1
-fi
-
 if ! command -v curl >/dev/null 2>&1; then
     echo -e "${RED}✗ curl not found${NC}"
     exit 1
@@ -85,6 +80,12 @@ fi
 
 if ! command -v nc >/dev/null 2>&1; then
     echo -e "${RED}✗ nc (netcat) not found${NC}"
+    exit 1
+fi
+
+# Check for NGINX for local environment
+if [ "${DOCKER_ENVIRONMENT:-}" != "main" ] && ! command -v nginx >/dev/null 2>&1; then
+    echo -e "${RED}✗ NGINX not found. Please install NGINX for locally..${NC}"
     exit 1
 fi
 

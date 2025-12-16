@@ -14,8 +14,8 @@ use ngx::http::HttpModuleLocationConf;
 use std::ffi::{c_char, c_void, CString};
 use tokio::sync::oneshot;
 
-/// Timer poll interval in milliseconds
-const TIMER_INTERVAL_MS: ngx_msec_t = 1;
+/// Timer poll interval in milliseconds (hybrid approach: eventfd notifies immediately, timer is backup)
+const TIMER_INTERVAL_MS: ngx_msec_t = 10;
 
 /// Chunk size for reading file-backed request bodies
 const FILE_READ_CHUNK_SIZE: usize = 64 * 1024; // 64 KB
@@ -98,6 +98,29 @@ macro_rules! ngx_log_info_raw {
     }};
 }
 
+/// Helper macro for warn logging from raw request pointer
+macro_rules! ngx_log_warn_raw {
+    ($request:expr, $($arg:tt)*) => {{
+        let r = $request;
+        if !r.is_null() {
+            unsafe {
+                let r_ref = &*r;
+                if let Some(conn) = r_ref.connection.as_ref() {
+                    let msg = format!($($arg)*);
+                    if let Ok(c_msg) = std::ffi::CString::new(msg) {
+                        ngx::ffi::ngx_log_error_core(
+                            ngx::ffi::NGX_LOG_WARN as ngx::ffi::ngx_uint_t,
+                            conn.log,
+                            0,
+                            c_msg.as_ptr(),
+                        );
+                    }
+                }
+            }
+        }
+    }};
+}
+
 /// Process EPP with body that has already been read (e.g., by BBR)
 ///
 /// This function extracts the already-read body and processes it immediately,
@@ -137,16 +160,29 @@ pub fn process_with_existing_body(
         body.len()
     );
 
+    // Create eventfd for notification
+    let eventfd = match crate::epp::context::create_eventfd() {
+        Ok(fd) => fd,
+        Err(e) => {
+            ngx_log_error_raw!(r, "ngx-inference: EPP failed to create eventfd: {}", e);
+            if ctx.failure_mode_allow {
+                return core::Status::NGX_DECLINED;
+            } else {
+                return core::Status::NGX_ERROR;
+            }
+        }
+    };
+
     // Create oneshot channel for result
     let (sender, receiver) = oneshot::channel();
 
-    // Spawn async EPP task
-    async_processor::spawn_epp_task(ctx.clone(), body, sender);
+    // Spawn async EPP task with eventfd
+    async_processor::spawn_epp_task(ctx.clone(), body, sender, eventfd);
 
     ngx_log_debug_raw!(r, "ngx-inference: EPP async task spawned, setting up timer");
 
-    // Create result watcher
-    let watcher = Box::new(ResultWatcher::new(receiver, r, ctx));
+    // Create result watcher with eventfd
+    let watcher = Box::new(ResultWatcher::new(receiver, r, ctx, eventfd));
     let watcher_ptr = Box::into_raw(watcher);
 
     // Set up timer to poll for results
@@ -295,16 +331,26 @@ unsafe extern "C" fn body_read_done(r: *mut ngx_http_request_t) {
         body.len()
     );
 
+    // Create eventfd for notification
+    let eventfd = match crate::epp::context::create_eventfd() {
+        Ok(fd) => fd,
+        Err(e) => {
+            ngx_log_error_raw!(r, "ngx-inference: EPP failed to create eventfd: {}", e);
+            unsafe { handle_epp_failure(r, &epp_ctx, ngx::ffi::NGX_HTTP_BAD_GATEWAY as ngx_int_t) };
+            return;
+        }
+    };
+
     // Create oneshot channel for result
     let (sender, receiver) = oneshot::channel();
 
-    // Spawn async EPP task
-    async_processor::spawn_epp_task(epp_ctx.clone(), body, sender);
+    // Spawn async EPP task with eventfd
+    async_processor::spawn_epp_task(epp_ctx.clone(), body, sender, eventfd);
 
     ngx_log_debug_raw!(r, "ngx-inference: EPP async task spawned, setting up timer");
 
-    // Create result watcher
-    let watcher = Box::new(ResultWatcher::new(receiver, r, epp_ctx.clone()));
+    // Create result watcher with eventfd
+    let watcher = Box::new(ResultWatcher::new(receiver, r, epp_ctx.clone(), eventfd));
     let watcher_ptr = Box::into_raw(watcher);
 
     // Set up timer to poll for results
@@ -580,6 +626,24 @@ unsafe extern "C" fn check_epp_result(ev: *mut ngx_event_t) {
         return;
     }
 
+    // HYBRID APPROACH: Check eventfd first for immediate notification
+    let eventfd = watcher.eventfd;
+    let mut buf: u64 = 0;
+    let eventfd_result = unsafe {
+        libc::read(
+            eventfd,
+            &mut buf as *mut u64 as *mut libc::c_void,
+            std::mem::size_of::<u64>(),
+        )
+    };
+
+    // If eventfd was triggered, result is ready - process immediately
+    let result_ready = eventfd_result > 0;
+
+    if result_ready {
+        ngx_log_debug_raw!(r, "ngx-inference: EPP eventfd notification received");
+    }
+
     // Check for timeout FIRST
     if watcher.is_timed_out() {
         ngx_log_error_raw!(
@@ -647,11 +711,17 @@ unsafe extern "C" fn check_epp_result(ev: *mut ngx_event_t) {
             );
         }
         Err(oneshot::error::TryRecvError::Empty) => {
-            // Result not ready yet, reschedule timer
-            ngx_log_debug_raw!(
-                r,
-                "ngx-inference: EPP timer fired - result not ready, rescheduling"
-            );
+            // Result not ready yet
+            if result_ready {
+                // eventfd triggered but channel empty - unexpected but possible race condition
+                ngx_log_debug_raw!(
+                    r,
+                    "ngx-inference: EPP eventfd triggered but channel empty (race condition)"
+                );
+            } else {
+                // Normal case: neither eventfd nor channel ready, reschedule timer
+                ngx_log_debug_raw!(r, "ngx-inference: EPP result not ready, rescheduling timer");
+            }
             unsafe {
                 ngx_add_timer(ev, TIMER_INTERVAL_MS);
             }
@@ -740,7 +810,7 @@ unsafe fn handle_epp_failure(
 
         if let Some(ref default) = ctx.default_upstream {
             if unsafe { set_upstream_header(r, &ctx.upstream_header, default) } {
-                ngx_log_info_raw!(r, "ngx-inference: EPP using default upstream '{}'", default);
+                ngx_log_warn_raw!(r, "ngx-inference: EPP using default upstream '{}'", default);
             }
         }
 

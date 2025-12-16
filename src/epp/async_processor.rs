@@ -26,7 +26,7 @@ pub fn get_runtime() -> &'static tokio::runtime::Runtime {
 /// Spawn an async EPP task
 ///
 /// This function spawns a Tokio task that performs the EPP gRPC call asynchronously.
-/// The result is sent back through the oneshot channel.
+/// The result is sent back through the oneshot channel and eventfd is notified.
 ///
 /// # Thread Safety
 ///
@@ -38,18 +38,33 @@ pub fn get_runtime() -> &'static tokio::runtime::Runtime {
 /// - `ctx`: EPP configuration and request context
 /// - `body`: Request body bytes
 /// - `sender`: Oneshot channel to send the result
+/// - `eventfd`: File descriptor to notify when result is ready
 pub fn spawn_epp_task(
     ctx: AsyncEppContext,
     body: Vec<u8>,
     sender: oneshot::Sender<Result<String, String>>,
+    eventfd: i32,
 ) {
     let rt = get_runtime();
 
     rt.spawn(async move {
         let result = process_epp_async(ctx, body).await;
-        // Send result back to NGINX worker thread
+
+        // Send result back to NGINX worker thread via channel
         // Ignore send errors (channel dropped means request was cancelled)
         let _ = sender.send(result);
+
+        // Notify NGINX via eventfd (write any non-zero value)
+        // This triggers immediate notification instead of waiting for timer
+        let value: u64 = 1;
+        unsafe {
+            libc::write(
+                eventfd,
+                &value as *const u64 as *const libc::c_void,
+                std::mem::size_of::<u64>(),
+            );
+        }
+        // Note: We don't close eventfd here - ResultWatcher Drop handles that
     });
 }
 

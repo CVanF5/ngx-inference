@@ -36,11 +36,11 @@ pub struct AsyncEppContext {
     pub default_upstream: Option<String>,
 }
 
-/// Watcher for timer-based result polling
+/// Watcher for timer-based result polling with eventfd notification
 ///
 /// This structure is passed to the NGINX timer callback to check for
-/// async EPP results. It contains a oneshot channel receiver and the
-/// request pointer (only used in NGINX worker context).
+/// async EPP results. It contains a oneshot channel receiver, eventfd for
+/// immediate notification, and the request pointer (only used in NGINX worker context).
 ///
 /// Note: The timer event is allocated from the connection pool and will be
 /// automatically freed when the connection closes.
@@ -56,6 +56,9 @@ pub struct ResultWatcher {
 
     /// Start time in milliseconds (for timeout tracking)
     pub start_time_ms: u64,
+
+    /// eventfd for immediate notification from Tokio thread
+    pub eventfd: i32,
 }
 
 // Safety: ResultWatcher is Send because:
@@ -65,17 +68,19 @@ pub struct ResultWatcher {
 unsafe impl Send for ResultWatcher {}
 
 impl ResultWatcher {
-    /// Create a new result watcher
+    /// Create a new result watcher with eventfd
     pub fn new(
         receiver: oneshot::Receiver<Result<String, String>>,
         request: *mut ngx::ffi::ngx_http_request_t,
         ctx: AsyncEppContext,
+        eventfd: i32,
     ) -> Self {
         Self {
             receiver,
             request,
             ctx,
             start_time_ms: current_time_ms(),
+            eventfd,
         }
     }
 
@@ -83,6 +88,17 @@ impl ResultWatcher {
     pub fn is_timed_out(&self) -> bool {
         let elapsed_ms = current_time_ms().saturating_sub(self.start_time_ms);
         elapsed_ms > self.ctx.timeout_ms
+    }
+}
+
+impl Drop for ResultWatcher {
+    fn drop(&mut self) {
+        // Close eventfd when watcher is dropped
+        if self.eventfd >= 0 {
+            unsafe {
+                libc::close(self.eventfd);
+            }
+        }
     }
 }
 
@@ -107,5 +123,24 @@ impl BodyReadContext {
     /// Create a new body read context
     pub fn new(epp_ctx: AsyncEppContext) -> Self {
         Self { epp_ctx }
+    }
+}
+
+/// Create an eventfd for EPP result notification
+///
+/// Creates a non-blocking, close-on-exec eventfd for notifying NGINX
+/// when async EPP tasks complete.
+///
+/// # Returns
+///
+/// - `Ok(fd)` with the eventfd file descriptor on success
+/// - `Err(&str)` with error message on failure
+pub fn create_eventfd() -> Result<i32, &'static str> {
+    let fd = unsafe { libc::eventfd(0, libc::EFD_NONBLOCK | libc::EFD_CLOEXEC) };
+
+    if fd < 0 {
+        Err("failed to create eventfd")
+    } else {
+        Ok(fd)
     }
 }
